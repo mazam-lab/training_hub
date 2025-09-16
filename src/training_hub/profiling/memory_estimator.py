@@ -38,14 +38,16 @@ def check_layer_params(layer_data: torch.Tensor,
                             'mlp.up_proj',
                             'mlp.down_proj']
     for term in TARGET_TERMS:
-        if layer_name.find(term) > -1:
+        if layer_name.find(term) > -1 and layer_name.find('weight') > -1:
+            if layer_data.dim() < 2:
+                layer_data = layer_data.unsqueeze(0)
             U_bytes_n: int = layer_data.shape[0] * layer_data.shape[0] 
             S_bytes_n: int  = layer_data.shape[0] * layer_data.shape[1]
             V_bytes_n: int = layer_data.shape[1] * layer_data.shape[1]
             return (U_bytes_n + S_bytes_n + V_bytes_n) * osft_bytes_n
 
     # If not, we'll only be storing the layer itself in memory. 
-    return layer_data.shape[0] * layer_data.shape[1] * modl_bytes_n
+    return layer_data.numel() * modl_bytes_n
 
 
 def calc_osft_params(model: torch.nn.Module,
@@ -59,14 +61,15 @@ def calc_osft_params(model: torch.nn.Module,
     for layer_name in model.state_dict().keys():
         accumulated_bytes += check_layer_params(model.state_dict()[layer_name],
                                                 layer_name,
-                                                modl_bytes_n)
+                                                modl_bytes_n,
+                                                osft_bytes_n)
     return accumulated_bytes
 
 
 def memory_estimator(
     num_gpus: int = 8,
     gpu_memory: int = 24000000000,
-    model_path: str = "Qwen/Qwen2.5-7B-Instruct",
+    model_path: str =  "RedHatAI/Phi-3-mini-128k-instruct-FP8", # "Qwen/Qwen2.5-7B-Instruct",
     effective_batch_size: Optional[int] = None,
     max_seq_len: Optional[int] = None,
     max_tokens_per_gpu: Optional[int] = 2048,
@@ -74,7 +77,7 @@ def memory_estimator(
     grad_dtype: Optional[torch.dtype]=None,
     activations_type: Optional[torch.dtype]=None,
     using_osft: Optional[bool] = False,
-    osft_dtype: Optional[torch.dtype]=torch.float32,
+    osft_dtype: Optional[torch.dtype]=None,
     **kwargs,
     ) -> tuple[int, int, int]:
 
