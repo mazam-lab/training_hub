@@ -1,29 +1,17 @@
 import torch 
-from typing import Union, Optional, Callable
+from typing import Callable
 from transformers import AutoModel
-from datasets import load_dataset
 
 """
 Code assisted by Cursor/Claude4
 """
 
-def handle_dtypes(given_dtype: torch.dtype,
-                    default_bytes: int) -> int:
-    """
-    Helper function to calculate the number of bytes in a given dtype
-    If given_dtype is None, default to using default_bytes instead. 
-    """
-    if given_dtype is None:
-        return default_bytes
-    else:
-        given_dtype = str(given_dtype)
-        return int(int(given_dtype.split('t')[-1]) / 8)
+FLOAT32_BYTES_N: int = 4
+ADAMW_PARAMS_N: int = 2
 
-
-def check_layer_params(layer_data: torch.Tensor,
-                        layer_name: str, 
-                        modl_bytes_n: int,
-                        osft_bytes_n: int) -> int:
+def _check_layer_params(layer_data: torch.Tensor,
+                        layer_name: str
+                        ) -> int:
     """
     For the given layer, determine how many bytes would be needed
     to store this layer when trained with OSFT
@@ -44,48 +32,42 @@ def check_layer_params(layer_data: torch.Tensor,
             U_bytes_n: int = layer_data.shape[0] * layer_data.shape[0] 
             S_bytes_n: int  = layer_data.shape[0] * layer_data.shape[1]
             V_bytes_n: int = layer_data.shape[1] * layer_data.shape[1]
-            return (U_bytes_n + S_bytes_n + V_bytes_n) * osft_bytes_n
+            return (U_bytes_n + S_bytes_n + V_bytes_n) * FLOAT32_BYTES_N
 
     # If not, we'll only be storing the layer itself in memory. 
-    return layer_data.numel() * modl_bytes_n
+    return layer_data.numel() * FLOAT32_BYTES_N
 
 
-def calc_osft_params(model: torch.nn.Module,
-                    modl_bytes_n: int,
-                    osft_bytes_n: int) -> int:
+def _calc_osft_params(model: torch.nn.Module) -> int:
     """
     Iterate through the layers in this model and determine how
     many bytes would be needed to store this model when trained with OSFT
     """
-    accumulated_bytes: int = 0
+    total_bytes: int = 0
     for layer_name in model.state_dict().keys():
-        accumulated_bytes += check_layer_params(model.state_dict()[layer_name],
-                                                layer_name,
-                                                modl_bytes_n,
-                                                osft_bytes_n)
-    return accumulated_bytes
+        total_bytes += _check_layer_params(model.state_dict()[layer_name],
+                                            layer_name)
+    return total_bytes
 
 
 def memory_estimator(
-    num_gpus: int = 8,
-    gpu_memory: int = 24000000000,
-    model_path: str =  "RedHatAI/Phi-3-mini-128k-instruct-FP8", # "Qwen/Qwen2.5-7B-Instruct",
-    effective_batch_size: Optional[int] = None,
-    max_seq_len: Optional[int] = None,
-    max_tokens_per_gpu: Optional[int] = 2048,
-    optim_dtype: Optional[torch.dtype]=None,
-    grad_dtype: Optional[torch.dtype]=None,
-    activations_type: Optional[torch.dtype]=None,
-    using_osft: Optional[bool] = False,
-    osft_dtype: Optional[torch.dtype]=None,
-    **kwargs,
+    num_gpus: int,
+    gpu_memory: int,
+    model_path: str,
+    effective_batch_size: int | None = None,
+    max_seq_len: int | None = None,
+    max_tokens_per_gpu: int | None = 16384,
+    osft: bool = False
     ) -> tuple[int, int, int]:
 
     """
-    Calculate the memory needed to run the given model for the 
+    Calculate the memory needed to fine tune the given model for the 
     given hyperparameters. After that, determine how possible it is for
     the given hardware to run the model, and note how much more memory
     is needed to make the training more feasible. 
+
+    Note that this estimate assumes training_hub will be used, 
+    in which all data types are float32 and the optimizer is always AdamW.
 
     Args:
         num_gpus: Number of GPUs to use for training (default: 8)
@@ -97,13 +79,8 @@ def memory_estimator(
         max_seq_len: Maximum sequence length of dataset samples 
         max_tokens_per_gpu: The maximum number of tokens that can be placed
                             on a single GPU during each mini-batch.
-        optim_dtype: Data type of the optimizer. If None, assume float32
-        grad_dtype: Data type of the gradients. If None, assume float32
-        activations_type: Data type of the activations. If None, assume float32
         using_osft: If set to True, calculate the memory usage assuming the
                     model is trained via OSFT. If False, assume SFT. 
-        osft_dtype: Data type of the OSFT's SVD decomposition matrices.
-                    If None, assume float32
 
     Return:
         lower_bound (int): The lower bound of the memory usage (in bytes)
@@ -111,7 +88,6 @@ def memory_estimator(
         upper_bound (int): The upper bound of the memory usage (in bytes)
     """
 
-    # NOTE: So the backend is always using AdamW with mixed FP precision...
     # TODO: Validate these estimations empirically 
 
     # Load model directly
@@ -120,19 +96,10 @@ def memory_estimator(
     # Determine parameters needed for calculations
     num_params: int = model.num_parameters(only_trainable=False)
     num_trainable_params: int = model.num_parameters(only_trainable=True)
-    model_type: str = str(model.dtype)
-    num_layers: int = model.config.num_hidden_layers
-    hidden_size: int = model.config.hidden_size
 
-    # Extract the model dtype from the config file
-    # The other dtypes will either be an inputted type
-    # *or* whatever type the model had
-    modl_bytes_n: int = int(int(model_type.split('t')[-1]) / 8)
-    opt_bytes_n: int = handle_dtypes(optim_dtype, modl_bytes_n)
-    grad_bytes_n: int = handle_dtypes(grad_dtype, modl_bytes_n)
-    act_bytes_n: int = handle_dtypes(activations_type, modl_bytes_n)
-    if using_osft:
-        osft_bytes_n: int = handle_dtypes(osft_dtype, modl_bytes_n)
+    # TODO: Find a more universal way to obtain these values...
+    num_layers: int = model.config.num_hidden_layers
+    hidden_size: int = model.config.hidden_size    
 
     # The number of tokens on each GPU will be bounded by either
     # The largest number of tokens in a batch (divided by # GPUs)
@@ -146,18 +113,18 @@ def memory_estimator(
                              effective_batch_size * max_seq_len / num_gpus)
 
     # Calculate the amount of VRAM needed to fine-tune the provided model
-    if using_osft:
-        gpu_vram_par: int = calc_osft_params(model, modl_bytes_n, osft_bytes_n) / num_gpus
+    if osft:
+        gpu_vram_par: int = _calc_osft_params(model) / num_gpus
     else:
-        gpu_vram_par: int = num_params * modl_bytes_n / num_gpus
-    gpu_vram_opt: int = opt_bytes_n * num_trainable_params * 2 / num_gpus
-    gpu_vram_grad: int = grad_bytes_n * num_trainable_params / num_gpus
+        gpu_vram_par: int = num_params * FLOAT32_BYTES_N / num_gpus
+    gpu_vram_opt: int = FLOAT32_BYTES_N * num_trainable_params * ADAMW_PARAMS_N / num_gpus
+    gpu_vram_grad: int = FLOAT32_BYTES_N * num_trainable_params / num_gpus
 
     # NOTE: Typically, K is somewhere in [10, 30], but some research suggests that K=17.
     # TODO: Add papers
-    gpu_vram_act_low: int = tokens_per_gpu * act_bytes_n * 10 * num_layers * hidden_size
-    gpu_vram_act_high: int = tokens_per_gpu * act_bytes_n * 30 * num_layers * hidden_size
-    gpu_vram_act_mid: int = tokens_per_gpu * act_bytes_n * 17 * num_layers * hidden_size
+    gpu_vram_act_low: int = tokens_per_gpu * FLOAT32_BYTES_N * 10 * num_layers * hidden_size
+    gpu_vram_act_high: int = tokens_per_gpu * FLOAT32_BYTES_N * 30 * num_layers * hidden_size
+    gpu_vram_act_mid: int = tokens_per_gpu * FLOAT32_BYTES_N * 17 * num_layers * hidden_size
 
     # Lambda functions to calculate the total amount of VRAM and misc overhead
     calc_subtotal: Callable[[int], int] = \
@@ -167,19 +134,20 @@ def memory_estimator(
 
     # Perform those calculations using the lambdas!
     gpu_vram_total_high: int = int(1.3 * calc_subtotal(gpu_vram_act_high))
-    gpu_vram_total_low: int = int(calc_subtotal(gpu_vram_act_low) + 2000000000)
+    gpu_vram_total_low: int = int(calc_subtotal(gpu_vram_act_low) + 1073741824*2)
     gpu_vram_total_mid: int = int(1.2 *  calc_subtotal(gpu_vram_act_mid))
     extra_low: int = calc_overhead(gpu_vram_total_low, gpu_vram_act_low)
     extra_high: int = calc_overhead(gpu_vram_total_high, gpu_vram_act_high)
-    extra_mid: int = calc_overhead(gpu_vram_total_mid, gpu_vram_act_mid)
 
     # Helper lambda to do the rounding when printing 
-    rounded_helper = lambda value : str(round(value / 1000000000, 1))
+    rounded_helper = lambda value : str(round(value / 1073741824, 1))
 
     def print_overall_stats():
         """
         Print out a breakdown of the estimated memory requirements
         """
+        print("Estimations for " + model_path + ":\n")
+
         print("The expected amount of memory needed to run this model is about " + 
                 rounded_helper(gpu_vram_total_mid * num_gpus) + " GB") 
         print("The lower and upper bounds are " + 
@@ -257,17 +225,10 @@ def memory_estimator(
     # Print out the recommendations based on the calculated memory requirements
     # and the provided GPU memory
     print_overall_stats()
-    print('\n==============================================\n')
-    if gpu_vram_total_high <= gpu_memory:
-        print_will_work()
-    elif gpu_vram_total_mid <= gpu_memory:
-        print_might_work()
-    elif gpu_vram_total_low <= gpu_memory:
-        print_likely_wont_work()
-    else:
-        print_wont_work()
+    if gpu_vram_total_high <= gpu_memory: print_will_work()
+    elif gpu_vram_total_mid <= gpu_memory: print_might_work()
+    elif gpu_vram_total_low <= gpu_memory: print_likely_wont_work()
+    else: print_wont_work()
 
     # Return the lower bound, estimated value, and upper bound 
     return gpu_vram_total_low, gpu_vram_total_mid, gpu_vram_total_high
-
-memory_estimator()
