@@ -1,3 +1,4 @@
+from click import FLOAT
 import torch 
 from typing import Callable
 from transformers import AutoModel
@@ -18,6 +19,12 @@ def _check_layer_params(layer_data: torch.Tensor,
     """
     # If the layer is trainable, i.e. it contains any of these terms,
     # then we will need to store a SVD decomposition of the layer in memory.
+
+    # TODO: Okay, so according to Nikhil, we don't need the S tensor. 
+    # Also, check through your profiles to see if you can hammer some stronger estimates
+    # Maybe we should account for the fact that these matrices sometimes get offloaded
+    # during the activation stage...?
+
     TARGET_TERMS: list[str] = ['self_attn.q_proj',
                             'self_attn.k_proj',
                             'self_attn.v_proj',
@@ -56,8 +63,9 @@ def memory_estimator(
     model_path: str,
     effective_batch_size: int | None = None,
     max_seq_len: int | None = None,
-    max_tokens_per_gpu: int | None = 16384,
-    osft: bool = False
+    max_tokens_per_gpu: int | None = 16500,
+    osft: bool = False,
+    use_liger: bool = False,
     ) -> tuple[int, int, int]:
 
     """
@@ -88,8 +96,6 @@ def memory_estimator(
         upper_bound (int): The upper bound of the memory usage (in bytes)
     """
 
-    # TODO: Validate these estimations empirically 
-
     # Load model directly
     model = AutoModel.from_pretrained(model_path, trust_remote_code=True, dtype="auto")
 
@@ -97,13 +103,15 @@ def memory_estimator(
     num_params: int = model.num_parameters(only_trainable=False)
     num_trainable_params: int = model.num_parameters(only_trainable=True)
 
-    # TODO: Find a more universal way to obtain these values...
+    # TODO: Find a more reliable way to obtain these values
+    # because some models don't have a config (how about some fallbacks?)
     num_layers: int = model.config.num_hidden_layers
     hidden_size: int = model.config.hidden_size    
 
     # The number of tokens on each GPU will be bounded by either
     # The largest number of tokens in a batch (divided by # GPUs)
     # *or* the value of max_tokens_per_gpu
+    # TODO: Should we try to bound this based on the expected dataset's lengths?
     if effective_batch_size is None or max_seq_len is None:
         tokens_per_gpu: int = max_tokens_per_gpu
     elif max_tokens_per_gpu is None:
@@ -113,31 +121,41 @@ def memory_estimator(
                              effective_batch_size * max_seq_len / num_gpus)
 
     # Calculate the amount of VRAM needed to fine-tune the provided model
+    # TODO: Validate this
     if osft:
         gpu_vram_par: int = _calc_osft_params(model) / num_gpus
     else:
         gpu_vram_par: int = num_params * FLOAT32_BYTES_N / num_gpus
+
+    # VALIDATED FOR ACCURACY:
     gpu_vram_opt: int = FLOAT32_BYTES_N * num_trainable_params * ADAMW_PARAMS_N / num_gpus
     gpu_vram_grad: int = FLOAT32_BYTES_N * num_trainable_params / num_gpus
 
-    # NOTE: Typically, K is somewhere in [10, 30], but some research suggests that K=17.
-    # TODO: Add papers
-    gpu_vram_act_low: int = tokens_per_gpu * FLOAT32_BYTES_N * 10 * num_layers * hidden_size
-    gpu_vram_act_high: int = tokens_per_gpu * FLOAT32_BYTES_N * 30 * num_layers * hidden_size
-    gpu_vram_act_mid: int = tokens_per_gpu * FLOAT32_BYTES_N * 17 * num_layers * hidden_size
+    # The VRAM needed to store the intermediate activations of the model
+    # TODO: Validate this
+    gpu_vram_act: int = (tokens_per_gpu * FLOAT32_BYTES_N  * num_layers * hidden_size)
+    
+    # Liger removes the need to store the activated outputs of the model
+    # If we're not using Liger, factor this in.
+    if not use_liger:
+        # TODO: This constant is how many times the output tensor gets
+        # repeated empirically. Why is this happening...?
+        output_constant = 7/3 if osft else 8/3 
+        gpu_vram_outputs = (tokens_per_gpu * FLOAT32_BYTES_N * model.embed_tokens.num_embeddings) * output_constant
+        gpu_vram_act += gpu_vram_outputs
 
     # Lambda functions to calculate the total amount of VRAM and misc overhead
     calc_subtotal: Callable[[int], int] = \
-        lambda act_value: gpu_vram_par + gpu_vram_opt + gpu_vram_grad + act_value
+        lambda: gpu_vram_par + gpu_vram_opt + gpu_vram_grad + gpu_vram_act
     calc_overhead: Callable[[int, int], int] = \
-        lambda tot_val, act_val: tot_val - gpu_vram_par - gpu_vram_opt - gpu_vram_grad - act_val
+        lambda tot_val: tot_val - gpu_vram_par - gpu_vram_opt - gpu_vram_grad - gpu_vram_act
 
     # Perform those calculations using the lambdas!
-    gpu_vram_total_high: int = int(1.3 * calc_subtotal(gpu_vram_act_high))
-    gpu_vram_total_low: int = int(calc_subtotal(gpu_vram_act_low) + 1073741824*2)
-    gpu_vram_total_mid: int = int(1.2 *  calc_subtotal(gpu_vram_act_mid))
-    extra_low: int = calc_overhead(gpu_vram_total_low, gpu_vram_act_low)
-    extra_high: int = calc_overhead(gpu_vram_total_high, gpu_vram_act_high)
+    gpu_vram_total_high: int = int(1.3 * calc_subtotal())
+    gpu_vram_total_low: int = int(calc_subtotal())
+    gpu_vram_total_mid: int = int(1.1 *  calc_subtotal())
+    extra_low: int = calc_overhead(gpu_vram_total_low)
+    extra_high: int = calc_overhead(gpu_vram_total_high)
 
     # Helper lambda to do the rounding when printing 
     rounded_helper = lambda value : str(round(value / 1073741824, 1))
@@ -169,8 +187,7 @@ def memory_estimator(
         print("Each GPU will need " +
                 rounded_helper(gpu_vram_grad) + " GB to store the gradients")
         print("Each GPU will need " +
-                rounded_helper(gpu_vram_act_low) + " - " +
-                rounded_helper(gpu_vram_act_high) + " GB to store the activations")
+                rounded_helper(gpu_vram_act) + " GB to store the activations")
         print("The remaining " +
                 rounded_helper(extra_low) + " - " + 
                 rounded_helper(extra_high) + " GB is estimated overhead")
