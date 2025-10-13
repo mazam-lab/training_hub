@@ -1,8 +1,5 @@
-from click import FLOAT
-import torch 
-from typing import Callable, Optional, override
+from typing import override
 from transformers import AutoModel
-from transformers.models.perceiver.modeling_perceiver import PerceiverMultimodalPreprocessor
 
 """
 Code assisted by Cursor/Claude4
@@ -14,8 +11,8 @@ FLOAT16_BYTES_N: int = 2
 FLOAT8_BYTES_N: int = 1
 ADAMW_PARAMS_N: int = 2
 
-# Helper lambda to do the rounding when printing 
-ROUNDER = lambda value : str(round(value / 1073741824, 1))
+# Helper function to do the rounding when printing 
+def ROUNDER(value: int) -> str: return str(round(value / 1073741824, 1))
 
 class BasicEstimator:
     """
@@ -43,11 +40,12 @@ class BasicEstimator:
         num_gpus: int = 8,
         gpu_memory: int = 85899345920,
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        effective_batch_size: int = None,
-        max_seq_len: int = None,
-        max_tokens_per_gpu: int = None,
+        effective_batch_size: int | None = None,
+        max_seq_len: int | None = None,
+        max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
+        trust_remote_code: bool = False,
     ):
         self.num_gpus = num_gpus
         self.gpu_memory = gpu_memory
@@ -56,7 +54,7 @@ class BasicEstimator:
         self.verbose = verbose
         
         # Load model directly
-        self.model = AutoModel.from_pretrained(model_path, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
 
         # Determine parameters needed for calculations
         self.num_params: int = self.model.num_parameters(only_trainable=False)
@@ -278,9 +276,9 @@ class OSFTEstimator(BasicEstimator):
         num_gpus: int = 8,
         gpu_memory: int = 85899345920,
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        effective_batch_size: int = None,
-        max_seq_len: int = None,
-        max_tokens_per_gpu: int = None,
+        effective_batch_size: int | None = None,
+        max_seq_len: int | None = None,
+        max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
     ):
@@ -348,11 +346,12 @@ def estimate(
         num_gpus: int = 8,
         gpu_memory: int = 85899345920,
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        effective_batch_size: int = None,
-        max_seq_len: int = None,
-        max_tokens_per_gpu: int = None,
+        effective_batch_size: int | None = None,
+        max_seq_len: int | None = None,
+        max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
+        trust_remote_code: bool = False
     ):
     """
     Convenience function for performing estimation
@@ -383,7 +382,25 @@ def estimate(
     """
 
     if training_method.lower() == "osft":
-        estimator = OSFTEstimator(num_gpus, gpu_memory, model_path, effective_batch_size, max_seq_len, max_tokens_per_gpu, use_liger, verbose)
+        estimator = OSFTEstimator(num_gpus,
+                                    gpu_memory,
+                                    model_path,
+                                    effective_batch_size,
+                                    max_seq_len,
+                                    max_tokens_per_gpu,
+                                    use_liger,
+                                    verbose,
+                                    trust_remote_code,
+                                )
     else:
-        estimator = BasicEstimator(num_gpus, gpu_memory, model_path, effective_batch_size, max_seq_len, max_tokens_per_gpu, use_liger, verbose)
+        estimator = BasicEstimator(num_gpus,
+                                    gpu_memory,
+                                    model_path,
+                                    effective_batch_size,
+                                    max_seq_len,
+                                    max_tokens_per_gpu,
+                                    use_liger,
+                                    verbose, 
+                                    trust_remote_code
+                                )
     return estimator.estimate()
