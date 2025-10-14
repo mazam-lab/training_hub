@@ -18,8 +18,8 @@ def ROUNDER(value: int) -> str: return str(round(value / 1073741824, 1))
 
 # Helper function to calculate how much the given unfrozen_rank_ratio 
 # will be affecting the OSFT estimation (through a quadratic mapping where
-# 0 is 0.25 of SFT's value, 0.33 is equal to SFT's value, and 1 is twice of SFT's value)
-def OSFT_RATIO(value: float) -> float: return -0.7802 * (value) * (value) + 2.5302 * (value) + 0.25
+# 0 is 0.5 of SFT's value, 1/3 is equal to SFT's value, and 1 is twice of SFT's value)
+def OSFT_RATIO(value: float) -> float: return 0.5 + (1.5 * value)
 
 
 class BasicEstimator:
