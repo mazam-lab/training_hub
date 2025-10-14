@@ -16,6 +16,11 @@ ADAMW_PARAMS_N: int = 2
 # Helper function to do the rounding when printing 
 def ROUNDER(value: int) -> str: return str(round(value / 1073741824, 1))
 
+# Helper function to calculate how much the given unfrozen_rank_ratio 
+# will be affecting the OSFT estimation (through a quadratic mapping where
+# 0 is 0.25 of SFT's value, 0.33 is equal to SFT's value, and 1 is twice of SFT's value)
+def OSFT_RATIO(value: float) -> float: return -0.7802 * (value) * (value) + 2.5302 * (value) + 0.25
+
 
 class BasicEstimator:
     """
@@ -68,6 +73,7 @@ class BasicEstimator:
         # The number of tokens on each GPU will be bounded by either
         # The largest number of tokens in a batch (divided by # GPUs)
         # *or* the value of max_tokens_per_gpu
+        self.tokens_per_gpu = None            
         if effective_batch_size is None or max_seq_len is None:
             self.tokens_per_gpu: int = max_tokens_per_gpu
         elif max_tokens_per_gpu is None:
@@ -75,6 +81,10 @@ class BasicEstimator:
         else:
             self.tokens_per_gpu: int = min(max_tokens_per_gpu,
                                             effective_batch_size * max_seq_len / self.num_gpus)
+
+        if self.tokens_per_gpu is None:
+            raise ValueError("At least one of (effective_batch_size, max_seq_len) or " +
+                                "max_tokens_per_gpu must be provided")
 
         # This is a scalar that's applied during the output memory calculation
         self.output_constant = 8/3
@@ -115,7 +125,17 @@ class BasicEstimator:
         Calculate the VRAM for storing the model's activated outputs
         """
         if not self.use_liger:
-            return (self.tokens_per_gpu * self.main_dtype_bytes * self.model.embed_tokens.num_embeddings) * self.output_constant
+            try:
+                vocab_size = self.model.embed_tokens.num_embeddings
+            except:
+                try:
+                    vocab_size = self.model.config.vocab_size
+                except:
+                    try:
+                        vocab_size = self.model.get_input_embeddings().num_embeddings
+                    except:
+                        raise ValueError("Could not find the given model's vocabulary size")
+            return (self.tokens_per_gpu * self.main_dtype_bytes * vocab_size) * self.output_constant
         else:
             return 0
 
@@ -215,10 +235,7 @@ class BasicEstimator:
             print(max_message)
 
 
-    def estimate(
-        self,
-    ) -> tuple[int, int, int]:
-
+    def estimate(self) -> tuple[int, int, int]:
         """
         Calculate the memory needed to fine tune the given model for the 
         given hyperparameters. After that, determine how possible it is for
@@ -291,7 +308,7 @@ class OSFTEstimatorExperimental(BasicEstimator):
         max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
-        trust_remote_code=False,
+        trust_remote_code: bool = False,
         unfreeze_rank_ratio: float = 0.25,
     ):
         super().__init__(num_gpus, gpu_memory, model_path,
@@ -351,31 +368,17 @@ class OSFTEstimatorExperimental(BasicEstimator):
         """
         Override the model parameter calculation by calculating based on OSFT's parameters
         """
-        osft_value = self._calc_osft_params() / self.num_gpus
-        self.model_value = super()._calc_model_params() * (self.unfreeze_rank_ratio / 0.33)
-        return osft_value + self.model_value
+        return self._calc_osft_params() / self.num_gpus 
 
     @override
     def _calc_gradients(self):
         """
         Override the optimizer parameter calculation by calculating based on OSFT's parameters
         """
-        return super()._calc_gradients() * (self.unfreeze_rank_ratio / 0.33)
+        return self._calc_model_params() * OSFT_RATIO(self.unfreeze_rank_ratio)
 
     @override
-    def estimate(
-        training_method: str = "sft",
-        num_gpus: int = 8,
-        gpu_memory: int = 85899345920,
-        model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        effective_batch_size: int | None = None,
-        max_seq_len: int | None = None,
-        max_tokens_per_gpu: int | None = None,
-        use_liger: bool = False,
-        verbose: int = 1,
-        trust_remote_code: bool = False,
-        unfreeze_rank_ratio: float = 0.25,
-    ):
+    def estimate(self) -> tuple[int, int, int]:
         print("CAUTION: This estimator for OSFT's memory requirements is still under development.\n" +
                 "Actual memory requirements may vary from the given estimate.")
 
@@ -420,11 +423,11 @@ class OSFTEstimator(BasicEstimator):
         """
         In addition to the 0-30% overhead, apply a multiplier based on the unfreeze_rank_ratio
         """
-        ratio_val = -0.7802 * (self.unfreeze_rank_ratio) * (self.unfreeze_rank_ratio) + 2.5302 * (self.unfreeze_rank_ratio) + 0.25
+        ratio_val = OSFT_RATIO(self.unfreeze_rank_ratio)
         return super()._apply_overhead(subtotal * ratio_val)        
     
     @override
-    def estimate(self):
+    def estimate(self) -> tuple[int, int, int]:
         print("CAUTION: This is a very rough estimate of OSFT's memory requirements.\n" +
                 "Actual memory requirements may vary from the given estimate.")
 
@@ -486,6 +489,18 @@ def estimate(
                                     trust_remote_code,
                                     unfreeze_rank_ratio,
                                 )
+    elif training_method.lower() == "osft-e":
+        estimator = OSFTEstimatorExperimental(num_gpus,
+                                    gpu_memory,
+                                    model_path,
+                                    effective_batch_size,
+                                    max_seq_len,
+                                    max_tokens_per_gpu,
+                                    use_liger,
+                                    verbose,
+                                    trust_remote_code,
+                                    unfreeze_rank_ratio,
+                                )
     else:
         estimator = BasicEstimator(num_gpus,
                                     gpu_memory,
@@ -497,4 +512,5 @@ def estimate(
                                     verbose, 
                                     trust_remote_code
                                 )
+    
     return estimator.estimate()
