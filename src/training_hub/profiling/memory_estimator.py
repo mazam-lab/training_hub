@@ -122,9 +122,11 @@ class BasicEstimator:
 
     def _calc_outputs(self):
         """
-        Calculate the VRAM for storing the model's activated outputs
+        Calculate the VRAM for storing the model's activated outputs.
+        Note that this value is 0 if Liger Kernels are used.
         """
         if not self.use_liger:
+            # This nested try-catch attempts to find the model's vocabulary size
             try:
                 vocab_size = self.model.embed_tokens.num_embeddings
             except AttributeError:
@@ -316,6 +318,8 @@ class OSFTEstimatorExperimental(BasicEstimator):
                         use_liger, verbose, trust_remote_code)
         self.output_constant = 7/3
         self.unfreeze_rank_ratio = unfreeze_rank_ratio
+        if not (0.0 <= self.unfreeze_rank_ratio <= 1.0):
+            raise ValueError("Ratio must be in the range [0, 1]")
 
         # Check to see which terms need to be included in the search for valid layers
         self.target_terms = MODEL_CONFIGS['default']['patterns']
@@ -417,6 +421,8 @@ class OSFTEstimator(BasicEstimator):
                             effective_batch_size, max_seq_len, max_tokens_per_gpu, 
                             use_liger, verbose, trust_remote_code)
         self.unfreeze_rank_ratio = unfreeze_rank_ratio
+        if not (0.0 <= self.unfreeze_rank_ratio <= 1.0):
+            raise ValueError("Ratio must be in the range [0, 1]")
 
     @override
     def _apply_overhead(self, subtotal):
