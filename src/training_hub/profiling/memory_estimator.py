@@ -1,5 +1,7 @@
 from typing import override
 from transformers import AutoModel
+from mini_trainer.osft_utils import MODEL_CONFIGS
+import numpy as np
 
 """
 Code assisted by Cursor/Claude4
@@ -13,6 +15,7 @@ ADAMW_PARAMS_N: int = 2
 
 # Helper function to do the rounding when printing 
 def ROUNDER(value: int) -> str: return str(round(value / 1073741824, 1))
+
 
 class BasicEstimator:
     """
@@ -90,14 +93,14 @@ class BasicEstimator:
         """
         Calcuate the VRAM for storing the gradients
         """
-        return self.main_dtype_bytes * self.num_trainable_params / self.num_gpus
+        return (self.main_dtype_bytes * self.num_trainable_params / self.num_gpus)
 
 
     def _calc_optimizer(self):
         """
         Calculate the VRAM for storing the optimizer states
         """
-        return self.main_dtype_bytes * self.num_trainable_params * self.opt_params / self.num_gpus
+        return (self.main_dtype_bytes * self.num_trainable_params * self.opt_params / self.num_gpus)
 
 
     def _calc_intermediate_activations(self):
@@ -149,35 +152,35 @@ class BasicEstimator:
 
     def _print_results(self, results, overhead, gpu_vram_par, gpu_vram_opt,
                         gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional):
-            """
-            Print out a breakdown of the estimated memory requirements
-            """
+        """
+        Print out a breakdown of the estimated memory requirements
+        """
 
-            print("Estimations for " + self.model_path + ":\n\n")
+        print("Estimations for " + self.model_path + ":\n\n")
 
-            print("Summary:")
-            print("The expected amount of memory needed to run this model is about " + 
-                    ROUNDER(results[1] * self.num_gpus) + " GB") 
-            print("The lower and upper bounds are " + 
-                    ROUNDER(results[0] * self.num_gpus)  + " - " + 
-                    ROUNDER(results[2] * self.num_gpus) + " GB") 
-            print("If you have " + str(self.num_gpus) + " GPUs, you will need about " + \
-                    ROUNDER(results[1]) + " GB, with bounds of " +
-                    ROUNDER(results[0]) + " - " + ROUNDER(results[2]) + " GB per GPU")
-            print("\n")
+        print("Summary:")
+        print("The expected amount of memory needed to run this model is about " + 
+                ROUNDER(results[1] * self.num_gpus) + " GB") 
+        print("The lower and upper bounds are " + 
+                ROUNDER(results[0] * self.num_gpus)  + " - " + 
+                ROUNDER(results[2] * self.num_gpus) + " GB") 
+        print("If you have " + str(self.num_gpus) + " GPUs, you will need about " + \
+                ROUNDER(results[1]) + " GB, with bounds of " +
+                ROUNDER(results[0]) + " - " + ROUNDER(results[2]) + " GB per GPU")
+        print("\n")
 
-            print("Component Breakdown:")
-            print("Each GPU will need " + ROUNDER(gpu_vram_par) + " GB to store the model parameters")
-            print("Each GPU will need " + ROUNDER(gpu_vram_opt) + " GB to store the optimizer states")
-            print("Each GPU will need " + ROUNDER(gpu_vram_grad) + " GB to store the gradients")
-            print("Each GPU will need " + ROUNDER(gpu_vram_act) + " GB to store the intermediate activations")
-            if self.use_liger:
-                print("Since Liger Kernels are being used, no additional memory is needed to store the outputs")
-            else:
-                print("Each GPU will need " + ROUNDER(gpu_vram_outputs) + " GB to store the outputs")
-            if gpu_vram_additional > 0:
-                print("This method also requires each GPU to use an additional " + ROUNDER(gpu_vram_additional) + " GB")
-            print("Up to " + ROUNDER(overhead[2]) + " GB can be expected as overhead")
+        print("Component Breakdown:")
+        print("Each GPU will need " + ROUNDER(gpu_vram_par) + " GB to store the model parameters")
+        print("Each GPU will need " + ROUNDER(gpu_vram_opt) + " GB to store the optimizer states")
+        print("Each GPU will need " + ROUNDER(gpu_vram_grad) + " GB to store the gradients")
+        print("Each GPU will need " + ROUNDER(gpu_vram_act) + " GB to store the intermediate activations")
+        if self.use_liger:
+            print("Since Liger Kernels are being used, no additional memory is needed to store the outputs")
+        else:
+            print("Each GPU will need " + ROUNDER(gpu_vram_outputs) + " GB to store the outputs")
+        if gpu_vram_additional > 0:
+            print("This method also requires each GPU to use an additional " + ROUNDER(gpu_vram_additional) + " GB")
+        print("Up to " + ROUNDER(overhead[2]) + " GB can be expected as overhead")
 
 
     def _print_tips(self, results):
@@ -264,10 +267,17 @@ class BasicEstimator:
         return results 
 
 
-class OSFTEstimator(BasicEstimator):
+class OSFTEstimatorExperimental(BasicEstimator):
     """
     An estimator for the memory usage of an LLM trained via OSFT. 
     Subclasses the BasicEstimator class.
+
+    NOTE: This is an experimental implementation of creating a more accurate
+    memory estimator for OSFT. However, it is still under development.
+
+    Args (in addition to the BasicEstimator args):
+        unfreeze_rank_ratio (float): The portion of the weight matrix that is unfrozen
+                                    during OSFT.
     """
 
     @override
@@ -281,11 +291,20 @@ class OSFTEstimator(BasicEstimator):
         max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
+        trust_remote_code=False,
+        unfreeze_rank_ratio: float = 0.25,
     ):
         super().__init__(num_gpus, gpu_memory, model_path,
                         effective_batch_size, max_seq_len, max_tokens_per_gpu, 
-                        use_liger, verbose)
+                        use_liger, verbose, trust_remote_code)
         self.output_constant = 7/3
+        self.unfreeze_rank_ratio = unfreeze_rank_ratio
+
+        # Check to see which terms need to be included in the search for valid layers
+        self.target_terms = MODEL_CONFIGS['default']['patterns']
+        for key in MODEL_CONFIGS.keys():
+            if self.model_path.find(key) > -1:
+                self.target_terms = MODEL_CONFIGS[key]['patterns']
 
 
     def _check_layer_params(
@@ -299,22 +318,16 @@ class OSFTEstimator(BasicEstimator):
 
         # If the layer is trainable, i.e. it contains any of these terms,
         # then we will need to store a SVD decomposition of the layer in memory.
-        TARGET_TERMS: list[str] = ['self_attn.q_proj',
-                                'self_attn.k_proj',
-                                'self_attn.v_proj',
-                                'self_attn.o_proj',
-                                'mlp.gate_proj',
-                                'mlp.up_proj',
-                                'mlp.down_proj']
         layer_data = self.model.state_dict()[layer_name]
         if layer_data.dim() < 2:
             return layer_data.numel() * FLOAT32_BYTES_N
-        for term in TARGET_TERMS:
-            if layer_name.find(term) > -1 and layer_name.find('weight') > -1:
-                U_bytes_n: int = layer_data.shape[0] * layer_data.shape[0] 
-                S_bytes_n: int = layer_data.shape[0] if layer_data.shape[0] < \
+        for term in self.target_terms:
+            lowest_dim = layer_data.shape[0] if layer_data.shape[0] < \
                             layer_data.shape[1] else layer_data.shape[1]
-                V_bytes_n: int = layer_data.shape[1] * layer_data.shape[1]
+            if layer_name.find(term) > -1 and layer_name.find('weight') > -1:
+                U_bytes_n: int = layer_data.shape[0] * lowest_dim
+                S_bytes_n: int = lowest_dim
+                V_bytes_n: int = lowest_dim * layer_data.shape[1]
                 return (U_bytes_n + S_bytes_n + V_bytes_n) * FLOAT32_BYTES_N
 
         # If not, we'll only be storing the layer itself in memory. 
@@ -338,7 +351,84 @@ class OSFTEstimator(BasicEstimator):
         """
         Override the model parameter calculation by calculating based on OSFT's parameters
         """
-        return self._calc_osft_params() / self.num_gpus
+        osft_value = self._calc_osft_params() / self.num_gpus
+        self.model_value = super()._calc_model_params() * (self.unfreeze_rank_ratio / 0.33)
+        return osft_value + self.model_value
+
+    @override
+    def _calc_gradients(self):
+        """
+        Override the optimizer parameter calculation by calculating based on OSFT's parameters
+        """
+        return super()._calc_gradients() * (self.unfreeze_rank_ratio / 0.33)
+
+    @override
+    def estimate(
+        training_method: str = "sft",
+        num_gpus: int = 8,
+        gpu_memory: int = 85899345920,
+        model_path: str = "ibm-granite/granite-3.3-8b-instruct",
+        effective_batch_size: int | None = None,
+        max_seq_len: int | None = None,
+        max_tokens_per_gpu: int | None = None,
+        use_liger: bool = False,
+        verbose: int = 1,
+        trust_remote_code: bool = False,
+        unfreeze_rank_ratio: float = 0.25,
+    ):
+        print("CAUTION: This estimator for OSFT's memory requirements is still under development.\n" +
+                "Actual memory requirements may vary from the given estimate.")
+
+        return super().estimate()
+
+
+class OSFTEstimator(BasicEstimator):
+    """
+    An estimator for the memory usage of an LLM trained via OSFT. 
+    Subclasses the BasicEstimator class.
+
+    NOTE: This is a more basic implementation of an OSFT estimator by
+    extrapolating from the SFT estimator.
+    Please be warned that the estimates may not be fully accurate.
+
+    Args (in addition to the BasicEstimator args):
+        unfreeze_rank_ratio (float): The portion of the weight matrix that is unfrozen
+                                    during OSFT.
+    """
+
+    @override
+    def __init__(
+        self,
+        num_gpus: int = 8,
+        gpu_memory: int = 85899345920,
+        model_path: str = "ibm-granite/granite-3.3-8b-instruct",
+        effective_batch_size: int | None = None,
+        max_seq_len: int | None = None,
+        max_tokens_per_gpu: int | None = None,
+        use_liger: bool = False,
+        verbose: int = 1,
+        trust_remote_code: bool = False,
+        unfreeze_rank_ratio: float = 0.25,
+    ):
+        super().__init__(num_gpus, gpu_memory, model_path,
+                            effective_batch_size, max_seq_len, max_tokens_per_gpu, 
+                            use_liger, verbose, trust_remote_code)
+        self.unfreeze_rank_ratio = unfreeze_rank_ratio
+
+    @override
+    def _apply_overhead(self, subtotal):
+        """
+        In addition to the 0-30% overhead, apply a multiplier based on the unfreeze_rank_ratio
+        """
+        ratio_val = -0.7802 * (self.unfreeze_rank_ratio) * (self.unfreeze_rank_ratio) + 2.5302 * (self.unfreeze_rank_ratio) + 0.25
+        return super()._apply_overhead(subtotal * ratio_val)        
+    
+    @override
+    def estimate(self):
+        print("CAUTION: This is a very rough estimate of OSFT's memory requirements.\n" +
+                "Actual memory requirements may vary from the given estimate.")
+
+        return super().estimate()
 
 
 def estimate(
@@ -351,7 +441,8 @@ def estimate(
         max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
-        trust_remote_code: bool = False
+        trust_remote_code: bool = False,
+        unfreeze_rank_ratio: float = 0.25,
     ):
     """
     Convenience function for performing estimation
@@ -373,6 +464,8 @@ def estimate(
         verbose (int): The level of verbosity to print out. Set to 0 for no printing,
                         set to 1 to print out only hardware recommendations,
                         set to 2 for a detailed memory breakdown.
+        unfreeze_rank_ratio (float): The portion of the weight matrix that is unfrozen
+                                    during OSFT.
 
     Return:
         A tuple containing three values:
@@ -380,7 +473,7 @@ def estimate(
             expected (int): The expected amount of memory usage (in bytes)
             upper_bound (int): The upper bound of the memory usage (in bytes)
     """
-
+    
     if training_method.lower() == "osft":
         estimator = OSFTEstimator(num_gpus,
                                     gpu_memory,
@@ -391,6 +484,7 @@ def estimate(
                                     use_liger,
                                     verbose,
                                     trust_remote_code,
+                                    unfreeze_rank_ratio,
                                 )
     else:
         estimator = BasicEstimator(num_gpus,
