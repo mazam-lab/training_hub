@@ -127,14 +127,14 @@ class BasicEstimator:
         if not self.use_liger:
             try:
                 vocab_size = self.model.embed_tokens.num_embeddings
-            except:
+            except AttributeError:
                 try:
                     vocab_size = self.model.config.vocab_size
-                except:
+                except AttributeError:
                     try:
                         vocab_size = self.model.get_input_embeddings().num_embeddings
-                    except:
-                        raise ValueError("Could not find the given model's vocabulary size")
+                    except AttributeError as e:
+                        raise ValueError("Could not find the given model's vocabulary size") from e
             return (self.tokens_per_gpu * self.main_dtype_bytes * vocab_size) * self.output_constant
         else:
             return 0
