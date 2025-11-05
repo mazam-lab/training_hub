@@ -32,15 +32,16 @@ For disclosure: Please note all bar plots shown in this document are based on co
 | 8x A100s | OSFT (No Liger)  | Granite 4   | Table-GPT | 00:14:11                        | 
 | 8x A100s | OSFT (No Liger)  | Granite 4   | Bespoke   | 00:23:01                        | 
 | 8x H100s | SFT              | Granite 3.3 | Table-GPT | 00:04:35                        | 
-| 8x H100s | SFT              | Granite 3.3 | Bespoke   | | 
-| 8x H100s | SFT              | Granite 4   | Table-GPT | | 
-| 8x H100s | SFT              | Granite 4   | Bespoke   | | 
+| 8x H100s | SFT              | Granite 3.3 | Bespoke   | 00:35:47                        | 
+| 8x H100s | SFT              | Granite 4   | Table-GPT | 00:05:40                        | 
+| 8x H100s | SFT              | Granite 4   | Bespoke   | 00:26:19                        | 
 | 8x H100s | OSFT             | Granite 3.3 | Table-GPT | | 
 | 8x H100s | OSFT             | Granite 3.3 | Bespoke   | | 
 | 8x H100s | OSFT (No Liger)  | Granite 3.3 | Table-GPT | | 
 | 8x H100s | OSFT (No Liger)  | Granite 3.3 | Bespoke   | | 
-| 8x H100s | OSFT (No Liger)  | Granite 4   | Table-GPT | | 
+| 8x H100s | OSFT (No Liger)  | Granite 4   | Table-GPT | 00:10:39                        | 
 | 8x H100s | OSFT (No Liger)  | Granite 4   | Bespoke   | | 
+
 
 ## Graph: A100 vs H100
 
@@ -48,13 +49,26 @@ For disclosure: Please note all bar plots shown in this document are based on co
 
 ## Graph: TableGPT vs Bespoke
 
-Reference-style: 
 ![A graph comparing TableGPT with Bespoke][logo]
 
-[logo]: https://github.com/Red-Hat-AI-Innovation-Team/training_hub/tree/main/examples/docs/example.png ""
+[logo]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/example.png?raw=true ""
 
 
 ### Tabled differences
+
+| Hardware | Training Type    | Model       | Table-GPT Time | Bespoke Time | Difference in Time | Multiplier Gain |
+| -------- | ---------------- | ----------- | -------------- | ------------ | ------------------ | --------------- |
+| 8x A100s | SFT              | Granite 3.3 | 00:10:01       | 01:17:02     | 01:07:01           | 7.69x           |
+| 8x A100s | SFT              | Granite 4   | 00:07:35       | 00:42:48     | 00:35:13           | 5.64x           |
+| 8x A100s | OSFT             | Granite 3.3 | 00:36:09       | 00:58:39     | 00:22:30           | 1.62x           |
+| 8x A100s | OSFT (No Liger)  | Granite 3.3 | 00:37:32       | 01:00:48     | 00:23:16           | 1.62x           |
+| 8x A100s | OSFT (No Liger)  | Granite 4   | 00:14:11       | 00:23:01     | 00:08:50           | 1.62x           |
+| 8x H100s | SFT              | Granite 3.3 | 00:04:35       | 00:35:47     | 00:31:12           | 7.81x           |
+| 8x H100s | SFT              | Granite 4   | 00:05:40       | 00:26:19     | 00:20:39           | 4.64x           |
+| 8x H100s | OSFT             | Granite 3.3 |                |              |                    |                 |
+| 8x H100s | OSFT (No Liger)  | Granite 3.3 |                |              |                    |                 |
+| 8x H100s | OSFT (No Liger)  | Granite 4   |                |              |                    |                 |
+
 
 ## Graph: Granite 3.3 vs Granite 4
 
