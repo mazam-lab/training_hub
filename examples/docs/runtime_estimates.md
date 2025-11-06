@@ -11,11 +11,14 @@ For disclosure: Please note all bar plots shown in this document are based on co
 - **Datasets**: Two datasets were tested, a simple dataset in TableGPT and a much larger and longer dataset in Bespoke-Stratos-17k.
     - Please note that both datasets were obtained by downloading the dataset from HuggingFace and then extracting the .jsonl file. 
 - All experiments were run for the first full epoch two times, with the displayed time being the average of the two times. 
-    - The variation between the two runs was negligible, never more than 6 seconds. 
+    - On the A100 machine, the variation between the two runs was negligible, never more than 6 seconds. 
+    - The variation is a bit larger on the H100 machine, especially during the first run of a pod (the first result was discarded and reran if it varied significantly)
 - The time measurement is calculated by using the timestamps logged during the training process in the above scripts
 - By default, OSFT makes use of Liger Kernels to improve memory usage and runtime. However, as of Nov 7th 2025, Liger Kernels currently don't have built-in support for Granite 4
     - As a result, the script was modified for allow Liger Kernels to be disabled for certain experiments
-    - The tables will be updated once support for Liger Kernels is added.  
+    - The tables will be updated once support for Liger Kernels is added. 
+- Some of these tests had the checkpointing hardcoded to be disabled in the script
+    - This does not appear to impact runtime of the actual training loop, this was mostly done to conserve disk space
 
 ## Full Results
 
@@ -35,12 +38,12 @@ For disclosure: Please note all bar plots shown in this document are based on co
 | 8x H100s | SFT              | Granite 3.3 | Bespoke   | 00:35:47                        | 
 | 8x H100s | SFT              | Granite 4   | Table-GPT | 00:05:40                        | 
 | 8x H100s | SFT              | Granite 4   | Bespoke   | 00:26:19                        | 
-| 8x H100s | OSFT             | Granite 3.3 | Table-GPT | | 
-| 8x H100s | OSFT             | Granite 3.3 | Bespoke   | | 
-| 8x H100s | OSFT (No Liger)  | Granite 3.3 | Table-GPT | | 
-| 8x H100s | OSFT (No Liger)  | Granite 3.3 | Bespoke   | | 
+| 8x H100s | OSFT             | Granite 3.3 | Table-GPT | 00:46:04                        | 
+| 8x H100s | OSFT             | Granite 3.3 | Bespoke   |                                 | 
+| 8x H100s | OSFT (No Liger)  | Granite 3.3 | Table-GPT |                                 | 
+| 8x H100s | OSFT (No Liger)  | Granite 3.3 | Bespoke   |                                 | 
 | 8x H100s | OSFT (No Liger)  | Granite 4   | Table-GPT | 00:10:39                        | 
-| 8x H100s | OSFT (No Liger)  | Granite 4   | Bespoke   | | 
+| 8x H100s | OSFT (No Liger)  | Granite 4   | Bespoke   | 00:16:46                        | 
 
 
 ## Graph: A100 vs H100
@@ -67,7 +70,7 @@ For disclosure: Please note all bar plots shown in this document are based on co
 | 8x H100s | SFT              | Granite 4   | 00:05:40       | 00:26:19     | 00:20:39           | 4.64x           |
 | 8x H100s | OSFT             | Granite 3.3 |                |              |                    |                 |
 | 8x H100s | OSFT (No Liger)  | Granite 3.3 |                |              |                    |                 |
-| 8x H100s | OSFT (No Liger)  | Granite 4   |                |              |                    |                 |
+| 8x H100s | OSFT (No Liger)  | Granite 4   | 00:10:39       | 00:16:46     | 00:06:07           | 1.57x           |
 
 
 ## Graph: Granite 3.3 vs Granite 4
