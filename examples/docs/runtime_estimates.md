@@ -60,13 +60,13 @@ As mentioned, please note that the A100 setup is on an SSHed machine running con
 
 ### Graphs
 
-![A graph comparing A100 with H100 for SFT][logo]
+![A graph comparing A100 with H100 for SFT][sfth]
 
-[logo]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/sft_hardware.png?raw=true ""
+[sfth]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/sft_hardware.png?raw=true ""
 
-![A graph comparing A100 with H100 OSFT][logo]
+![A graph comparing A100 with H100 OSFT][osfth]
 
-[logo]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/osft_hardware.png?raw=true ""
+[osfth]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/osft_hardware.png?raw=true ""
 
 ### Tabled differences
 
@@ -120,13 +120,13 @@ The differences between Granite 3.3 and Granite 4's statistics for Table-GPT wer
 
 ### Graphs
 
-![A graph comparing TableGPT with Bespoke for SFT][logo]
+![A graph comparing TableGPT with Bespoke for SFT][sftd]
 
-[logo]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/sft_datasets.png?raw=true ""
+[sftd]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/sft_datasets.png?raw=true ""
 
-![A graph comparing TableGPT with Bespoke OSFT][logo]
+![A graph comparing TableGPT with Bespoke OSFT][osftd]
 
-[logo]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/osft_datasets.png?raw=true ""
+[osftd]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/osft_datasets.png?raw=true ""
 
 
 ### Tabled differences
@@ -152,13 +152,13 @@ Granite 4 is still in preview stages, for these runs we use Tiny Preview, which 
 
 ### Graphs
 
-![A graph comparing Granite 3.3 with Granite 4 for SFT][logo]
+![A graph comparing Granite 3.3 with Granite 4 for SFT][sftm]
 
-[logo]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/sft_models.png?raw=true ""
+[sftm]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/sft_models.png?raw=true ""
 
-![A graph comparing Granite 3.3 with Granite 4 OSFT][logo]
+![A graph comparing Granite 3.3 with Granite 4 OSFT][osftm]
 
-[logo]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/osft_models.png?raw=true ""
+[osftm]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/osft_models.png?raw=true ""
 
 ### Tabled differences
 
