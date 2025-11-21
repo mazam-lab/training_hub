@@ -1,0 +1,276 @@
+# Low-Rank Adaptation (LoRA) + SFT
+
+> **Conceptual Overview** - For complete API reference, see [lora_sft() Function Reference](/api/functions/lora_sft)
+
+## What is LoRA?
+
+Low-Rank Adaptation (LoRA) is a **parameter-efficient fine-tuning** technique that allows you to fine-tune large language models with significantly reduced memory requirements and faster training times. Instead of updating all model parameters, LoRA trains small low-rank matrices that are added to the existing weights, drastically reducing the number of trainable parameters.
+
+In Training Hub, LoRA is combined with supervised fine-tuning (SFT) and powered by the optimized [Unsloth backend](/api/backends/unsloth), which provides up to 2x faster training and 70% less VRAM usage compared to standard implementations.
+
+## When to Use LoRA
+
+Use LoRA when you want to:
+
+- **Fine-tune large models efficiently** with limited GPU memory (e.g., 7B+ models on consumer GPUs)
+- **Reduce training costs** while maintaining competitive performance
+- **Experiment quickly** with multiple fine-tuning configurations
+- **Create model adapters** that can be easily shared and switched
+
+LoRA works best when:
+- You have limited GPU memory or computational resources
+- You want faster iteration cycles during development
+- You're fine-tuning for a specific task and don't need to modify all model parameters
+- You want to create multiple task-specific adapters from a single base model
+
+**Note:** For memory-rich environments or when you need maximum performance, standard [SFT (Supervised Fine-Tuning)](/algorithms/sft) may achieve slightly better results. For continual learning without forgetting, consider [OSFT](/algorithms/osft).
+
+## Quick Start
+
+Here's a minimal example to get started with LoRA:
+
+```python
+from training_hub import lora_sft
+
+# Run LoRA fine-tuning
+result = lora_sft(
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",  # Model to fine-tune
+    data_path="./training_data.jsonl",        # Your training data
+    ckpt_output_dir="./outputs",              # Where to save results
+    lora_r=16,                                # LoRA rank
+    lora_alpha=32,                            # LoRA scaling parameter
+    num_epochs=3,                             # Training epochs
+    learning_rate=2e-4                        # Learning rate
+)
+```
+
+Your training data should be in JSONL format with messages (same as SFT):
+
+```json
+{"messages": [{"role": "user", "content": "What is LoRA?"}, {"role": "assistant", "content": "LoRA is parameter-efficient fine-tuning..."}]}
+{"messages": [{"role": "user", "content": "How does it work?"}, {"role": "assistant", "content": "It trains low-rank adaptation matrices..."}]}
+```
+
+### Launch Requirements
+
+**Single-GPU:**
+```bash
+python my_training_script.py
+```
+
+**Multi-GPU (IMPORTANT):**
+Unlike other algorithms in training_hub, LoRA requires `torchrun` for multi-GPU setups:
+
+```bash
+# For 4 GPUs
+torchrun --nproc-per-node=4 my_training_script.py
+
+# For 8 GPUs
+torchrun --nproc-per-node=8 my_training_script.py
+```
+
+## Key Concepts
+
+### Low-Rank Decomposition
+
+LoRA works by decomposing weight updates into low-rank matrices. Instead of updating a large weight matrix W directly, LoRA learns two smaller matrices A and B such that:
+
+```
+W_updated = W_original + A × B
+```
+
+Where A and B have much smaller dimensions than W, dramatically reducing trainable parameters and memory usage.
+
+### LoRA Parameters
+
+**`lora_r` (LoRA Rank)**
+- Controls the rank of the low-rank matrices
+- Higher values capture more information but use more memory
+- Typical values: 8, 16, 32, 64
+- **Start with 16** and increase if needed
+
+**`lora_alpha` (LoRA Alpha)**
+- Scaling parameter that controls the magnitude of LoRA updates
+- Often set to 2× the rank (e.g., alpha=32 for rank=16)
+- Higher values = stronger adaptation
+
+**`lora_dropout`**
+- Dropout rate for LoRA layers (default: 0.0)
+- Optimized for Unsloth backend
+
+**`target_modules`**
+- Which model modules to apply LoRA to
+- Auto-detected if not specified
+- Common choices: attention layers, all linear layers
+
+### QLoRA (Quantized LoRA)
+
+For even greater memory savings, use 4-bit quantization with QLoRA:
+
+```python
+result = lora_sft(
+    model_path="Qwen/Qwen2.5-7B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./outputs",
+    lora_r=64,              # Higher rank for quantized model
+    lora_alpha=128,
+    load_in_4bit=True,      # Enable QLoRA
+    learning_rate=1e-4      # Lower LR for quantized training
+)
+```
+
+This enables fine-tuning of very large models (20B+) on consumer GPUs with 24GB VRAM.
+
+### Dataset Formats
+
+LoRA training supports multiple dataset formats:
+
+**Messages Format (Recommended):**
+```json
+{
+  "messages": [
+    {"role": "user", "content": "What is machine learning?"},
+    {"role": "assistant", "content": "Machine learning is..."}
+  ]
+}
+```
+
+**Alpaca Format:**
+```json
+{
+  "instruction": "Explain machine learning",
+  "input": "",
+  "output": "Machine learning is..."
+}
+```
+
+### Memory Benefits
+
+LoRA dramatically reduces memory requirements:
+- **Trainable Parameters**: Typically 0.1-1% of full model parameters
+- **VRAM Usage**: 30-70% reduction with Unsloth optimizations
+- **Training Speed**: Up to 2x faster with Unsloth
+
+Exact savings depend on your model, LoRA configuration (rank, target modules), and batch size settings.
+
+## Advanced Usage
+
+### Multi-GPU Distributed Training
+
+For distributed training across multiple GPUs:
+
+```python
+result = lora_sft(
+    model_path="Qwen/Qwen2.5-7B-Instruct",
+    data_path="./large_dataset.jsonl",
+    ckpt_output_dir="./outputs",
+
+    # LoRA settings
+    lora_r=32,
+    lora_alpha=64,
+
+    # Distributed training
+    effective_batch_size=128,  # Total across all GPUs
+    micro_batch_size=2,        # Per GPU
+
+    # Training settings
+    num_epochs=3,
+    learning_rate=2e-4
+)
+```
+
+Launch with torchrun:
+```bash
+torchrun --nproc-per-node=4 my_script.py
+```
+
+### Custom Target Modules
+
+Specify which modules to apply LoRA to:
+
+```python
+result = lora_sft(
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./outputs",
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],  # Attention only
+    lora_r=16,
+    lora_alpha=32
+)
+```
+
+### Weights & Biases Integration
+
+**Note:** Weights & Biases is not included in the `[lora]` extras. Install separately:
+
+```bash
+pip install wandb
+```
+
+Then use in training:
+
+```python
+result = lora_sft(
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./outputs",
+    lora_r=16,
+    lora_alpha=32,
+    wandb_project="my-lora-project",
+    wandb_entity="my-team"
+)
+```
+
+### Performance Tips
+
+1. **Use Unsloth optimizations** (included by default)
+2. **Enable BF16** for better performance: `bf16=True`
+3. **Use sample packing**: `sample_packing=True`
+4. **Optimize batch sizes**: Start with `micro_batch_size=2` and adjust
+5. **For large models**: Use `load_in_4bit=True` for QLoRA
+
+## Troubleshooting
+
+### Memory Issues
+- Reduce `micro_batch_size`
+- Enable `load_in_4bit=True` for QLoRA
+- Lower the `lora_r` value
+- Reduce `max_seq_len`
+
+### Multi-GPU Issues
+- Ensure you're using `torchrun` for multi-GPU (not direct Python execution)
+- Check that `effective_batch_size` is divisible by `nproc_per_node * micro_batch_size`
+- For very large models, try `enable_model_splitting=True`
+
+### Installation Issues
+- If xformers conflicts occur, the LoRA extras use PyTorch-optimized builds
+- For CUDA version issues, try the appropriate extra: `[lora-cu129]` or `[lora-cu130]`
+
+## Installation
+
+To use LoRA, install with the LoRA extras:
+
+```bash
+pip install training-hub[lora]
+```
+
+This includes:
+- Unsloth optimizations for 2x faster training and 70% less VRAM
+- PyTorch-optimized xformers for better performance
+- TRL for advanced training features
+
+## Next Steps
+
+**Learn more about LoRA:**
+- [lora_sft() Function Reference](/api/functions/lora_sft) - Complete parameter documentation and advanced examples
+- [LoRASFTAlgorithm Class](/api/classes/LoRASFTAlgorithm) - Object-oriented API for advanced use cases
+- [Unsloth Backend](/api/backends/unsloth) - Backend implementation details
+
+**Related topics:**
+- [SFT Algorithm](/algorithms/sft) - Standard full fine-tuning
+- [OSFT Algorithm](/algorithms/osft) - Continual learning without forgetting
+- [Data Formats](/api/data-formats) - Detailed data format specifications
+
+**Working examples:**
+- Check the [examples directory](/examples/) for Jupyter notebooks and scripts demonstrating LoRA in action
+- See [lora_example.py](https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/examples/scripts/lora_example.py) for complete working examples

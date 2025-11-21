@@ -2,9 +2,10 @@
 
 This directory contains documentation, tutorials, and examples for using training_hub algorithms.
 
+> **Looking for documentation?** Visit the comprehensive [Training Hub Documentation](https://ai-innovation.team/training_hub) for guides, API reference, and algorithm overviews.
+
 ## Directory Structure
 
-- **`docs/`** - Usage documentation and guides for supported algorithms
 - **`notebooks/`** - Interactive Jupyter notebooks with step-by-step tutorials
 - **`scripts/`** - Standalone Python scripts for automation and examples
 
@@ -15,7 +16,7 @@ This directory contains documentation, tutorials, and examples for using trainin
 The SFT algorithm supports training language models on supervised datasets with both single-node and multi-node distributed training capabilities.
 
 **Documentation:**
-- [SFT Usage Guide](docs/sft_usage.md) - Comprehensive usage documentation with parameter reference and examples
+- [SFT Usage Guide](https://ai-innovation.team/training_hub/#/algorithms/sft) - Comprehensive usage documentation with parameter reference and examples
 
 **Tutorials:**
 - [LAB Multi-Phase Training Tutorial](notebooks/lab_multiphase_training_tutorial.ipynb) - Interactive notebook demonstrating LAB multi-phase training workflow
@@ -49,7 +50,7 @@ result = sft(
 The OSFT algorithm supports continual training of pre-trained or instruction-tuned models without requiring supplementary datasets to maintain the original model distribution. Based on [Nayak et al. (2025)](https://arxiv.org/abs/2504.07097), it enables efficient customization while preventing catastrophic forgetting.
 
 **Documentation:**
-- [OSFT Usage Guide](docs/osft_usage.md) - Comprehensive usage documentation with parameter reference and examples
+- [OSFT Usage Guide](https://ai-innovation.team/training_hub/#/algorithms/osft) - Comprehensive usage documentation with parameter reference and examples
 
 **Tutorials:**
 - [OSFT Comprehensive Tutorial](notebooks/osft_comprehensive_tutorial.ipynb) - Interactive notebook covering all OSFT parameters with popular model examples
@@ -86,7 +87,7 @@ result = osft(
 LoRA provides parameter-efficient fine-tuning with significantly reduced memory requirements by training low-rank adaptation matrices instead of the full model weights. Training hub implements LoRA with supervised fine-tuning using the optimized Unsloth backend.
 
 **Documentation:**
-- [LoRA Usage Guide](docs/lora_usage.md) - Comprehensive usage documentation with parameter reference and examples
+- [LoRA Usage Guide](https://ai-innovation.team/training_hub/#/algorithms/lora) - Comprehensive usage documentation with parameter reference and examples
 
 **Scripts:**
 - [LoRA Example](scripts/lora_example.py) - Basic LoRA training examples with different configurations and dataset formats
@@ -154,6 +155,6 @@ interpolate_models("/path/to/base/model", "/path/to/trained/checkpoint")
 
 ## Getting Started
 
-1. **For detailed parameter documentation**: Check the relevant guide in `docs/`
+1. **For detailed parameter documentation**: Visit the [Training Hub Documentation](https://ai-innovation.team/training_hub)
 2. **For hands-on learning**: Open the interactive notebooks in `notebooks/`
 3. **For automation scripts**: Refer to examples in `scripts/`

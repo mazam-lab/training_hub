@@ -61,13 +61,9 @@ Granite 4 is still in preview stages, for these runs we use Tiny Preview, which 
 
 ### Graphs
 
-![A graph comparing Granite 3.3 with Granite 4 for SFT][sftm]
+![A graph comparing Granite 3.3 with Granite 4 for SFT](./sft_models.png)
 
-[sftm]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/sft_models.png?raw=true ""
-
-![A graph comparing Granite 3.3 with Granite 4 OSFT][osftm]
-
-[osftm]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/osft_models.png?raw=true ""
+![A graph comparing Granite 3.3 with Granite 4 OSFT](./osft_models.png)
 
 ### Tabled differences
 
