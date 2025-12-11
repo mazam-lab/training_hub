@@ -14,6 +14,7 @@ Code assisted by Cursor/Claude4
 FLOAT32_BYTES_N: int = 4
 FLOAT16_BYTES_N: int = 2
 FLOAT8_BYTES_N: int = 1
+FLOAT4_BYTES_N: float = 0.5
 ADAMW_PARAMS_N: int = 2
 
 # Helper function to do the rounding when printing 
@@ -73,6 +74,21 @@ class BasicEstimator:
         self.num_layers: int = self.model.config.num_hidden_layers
         self.hidden_size: int = self.model.config.hidden_size  
 
+        # This is a scalar that's applied during the output memory calculation
+        self.output_constant = 8/3
+        self.main_dtype_bytes = FLOAT32_BYTES_N
+        self.opt_params = ADAMW_PARAMS_N
+
+        self.LOW_MULTIPLIER = 1.0
+        self.MEDIUM_MULTIPLIER = 1.1
+        self.HIGH_MULTIPLIER = 1.3
+
+        self._resolve_tokens_per_gpu(effective_batch_size, max_seq_len, max_tokens_per_gpu)
+
+    def _resolve_tokens_per_gpu(self, effective_batch_size: int | None, max_seq_len: int | None, max_tokens_per_gpu: int | None):
+        """
+        Determine how many tokens will be placed on each GPU during each mini-batch
+        """
         # The number of tokens on each GPU will be bounded by either
         # The largest number of tokens in a batch (divided by # GPUs)
         # *or* the value of max_tokens_per_gpu
@@ -88,11 +104,6 @@ class BasicEstimator:
         if self.tokens_per_gpu is None:
             raise ValueError("At least one of (effective_batch_size, max_seq_len) or " +
                                 "max_tokens_per_gpu must be provided")
-
-        # This is a scalar that's applied during the output memory calculation
-        self.output_constant = 8/3
-        self.main_dtype_bytes = FLOAT32_BYTES_N
-        self.opt_params = ADAMW_PARAMS_N
 
 
     def _calc_model_params(self):
@@ -165,9 +176,9 @@ class BasicEstimator:
             overhead_tuple: A triplet of the lowest, expected, and highest amount of
                             overhead memory required for training
         """
-        gpu_vram_total_low: int = int(subtotal)
-        gpu_vram_total_mid: int = int(1.1 *  subtotal)
-        gpu_vram_total_high: int = int(1.3 * subtotal)
+        gpu_vram_total_low: int = int(self.LOW_MULTIPLIER * subtotal)
+        gpu_vram_total_mid: int = int(self.MEDIUM_MULTIPLIER *  subtotal)
+        gpu_vram_total_high: int = int(self.HIGH_MULTIPLIER * subtotal)
         extra_low: int = max(gpu_vram_total_low - subtotal, 0)
         extra_mid: int = gpu_vram_total_mid - subtotal
         extra_high: int = gpu_vram_total_high - subtotal
@@ -287,6 +298,156 @@ class BasicEstimator:
 
         # Return the lower bound, estimated value, and upper bound 
         return results 
+
+
+class LoRAEstimator(BasicEstimator):
+    """
+    An estimator for the memory usage of an LLM trained via LoRA.
+    Subclasses the BasicEstimator class.
+
+    NOTE: The impact of the batch size and max_seq_len is negligible in practice,
+    so they are not accounted for in the estimation.
+    """
+    @override
+    def __init__(
+        self,
+        num_gpus: int = 8,
+        gpu_memory: int = 85899345920,
+        model_path: str = "ibm-granite/granite-3.3-8b-instruct",
+        effective_batch_size: int | None = None,
+        max_seq_len: int | None = None,
+        max_tokens_per_gpu: int | None = None,
+        use_liger: bool = False,
+        verbose: int = 1,
+        trust_remote_code: bool = False,
+        lora_r: int = 32,
+    ):
+        super().__init__(num_gpus, gpu_memory, model_path,
+                        effective_batch_size, max_seq_len, max_tokens_per_gpu, 
+                        use_liger, verbose, trust_remote_code)
+        
+        self.LOW_MULTIPLIER = 1.0
+        self.MEDIUM_MULTIPLIER = 1.1
+        self.HIGH_MULTIPLIER = 1.3        
+
+        self.main_dtype_bytes = FLOAT16_BYTES_N
+        self.model_bytes = FLOAT16_BYTES_N
+
+        self.tokens_per_gpu = max_seq_len
+        self.lora_r = lora_r
+
+        self.AB_params = self._resolve_lora()
+
+        self._find_valid_layers()
+
+        print(self.AB_params)
+
+
+    def _find_valid_layers(self):
+        """
+        Check to see which terms need to be included in the search for valid layers
+        """
+        self.target_terms = MODEL_CONFIGS['default']['patterns']
+        lowered_model_path = self.model_path.lower()
+        for key in MODEL_CONFIGS.keys():
+            if lowered_model_path.find(key.lower()) > -1:
+                self.target_terms = MODEL_CONFIGS[key]['patterns']
+                break
+
+
+    def _resolve_lora(self):
+        """
+        Determine how many parameters the low rank matrices will make up 
+        """
+        weight_sizes = []
+
+        for layer_name in self.model.state_dict().keys():
+            layer_data = self.model.state_dict()[layer_name]
+            if layer_data.dim() < 2 or layer_name.find('weight') <= -1:
+                continue
+            else:
+                r_in = layer_data.shape[0]
+                r_out = layer_data.shape[1]
+                for term in self.target_terms:
+                    if layer_name.find(term) > -1:
+                        weight_sizes.append(r_in)
+                        weight_sizes.append(r_out)
+                        break
+        
+        AB_params = 0 
+        for weight_size in weight_sizes:
+            AB_params += weight_size * self.lora_r
+
+        return AB_params
+
+
+    @override
+    def _resolve_tokens_per_gpu(self, effective_batch_size: int | None, max_seq_len: int | None, max_tokens_per_gpu: int | None):
+        """
+        For LoRA, the number of tokens has a negligible effect on memory usage
+        """
+        return
+
+
+    @override
+    def _calc_model_params(self):
+        """
+        Calcuate the VRAM for storing the model parameters
+        """
+        return ((self.num_params * self.model_bytes) + (self.AB_params * FLOAT32_BYTES_N)) / self.num_gpus
+
+    @override
+    def _calc_gradients(self):
+        """
+        Calcuate the VRAM for storing the gradients
+        """
+        return (self.main_dtype_bytes * self.AB_params / self.num_gpus)
+
+
+    @override
+    def _calc_optimizer(self):
+        """
+        Calculate the VRAM for storing the optimizer states
+        """
+        return (FLOAT32_BYTES_N * self.AB_params * self.opt_params / self.num_gpus)
+
+    @override
+    def _calc_intermediate_activations(self):
+        # print(self.AB_params)
+        # return (self.tokens_per_gpu * self.main_dtype_bytes  * self.num_layers * self.hidden_size) # + (self.AB_params * self.main_dtype_bytes * self.tokens_per_gpu)
+        return 0
+
+    @override
+    def _calc_outputs(self):
+        """
+        Calculate the VRAM for storing the model's activated outputs.
+        """
+        return 0
+
+
+class QLoRAEstimator(LoRAEstimator):
+    """
+    An estimator for the memory usage of an LLM trained via QLoRA.
+    It's the same as LoRA, just with a smaller data for the model. 
+    """
+    @override
+    def __init__(
+        self,
+        num_gpus: int = 8,
+        gpu_memory: int = 85899345920,
+        model_path: str = "ibm-granite/granite-3.3-8b-instruct",
+        effective_batch_size: int | None = None,
+        max_seq_len: int | None = None,
+        max_tokens_per_gpu: int | None = None,
+        use_liger: bool = False,
+        verbose: int = 1,
+        trust_remote_code: bool = False,
+        lora_r: int = 32,
+    ):
+        super().__init__(num_gpus, gpu_memory, model_path,
+                        effective_batch_size, max_seq_len, max_tokens_per_gpu, 
+                        use_liger, verbose, trust_remote_code, lora_r)
+        self.model_bytes = FLOAT4_BYTES_N
 
 
 class OSFTEstimatorExperimental(BasicEstimator):
@@ -455,6 +616,7 @@ def estimate(
         verbose: int = 1,
         trust_remote_code: bool = False,
         unfreeze_rank_ratio: float = 0.25,
+        lora_r: int = 32,
     ):
     """
     Convenience function for performing estimation
@@ -510,6 +672,30 @@ def estimate(
                                     trust_remote_code,
                                     unfreeze_rank_ratio,
                                 )
+    elif training_method.lower() == "lora":
+        estimator = LoRAEstimator(num_gpus,
+                                gpu_memory,
+                                model_path,
+                                effective_batch_size,
+                                max_seq_len,
+                                max_tokens_per_gpu,
+                                use_liger,
+                                verbose,
+                                trust_remote_code,
+                                lora_r,
+                            )
+    elif training_method.lower() == "qlora":
+        estimator = QLoRAEstimator(num_gpus,
+                                gpu_memory,
+                                model_path,
+                                effective_batch_size,
+                                max_seq_len,
+                                max_tokens_per_gpu,
+                                use_liger,
+                                verbose,
+                                trust_remote_code,
+                                lora_r,
+                            )
     else:
         estimator = BasicEstimator(num_gpus,
                                     gpu_memory,
