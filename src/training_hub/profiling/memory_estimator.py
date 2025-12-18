@@ -2,6 +2,7 @@ try:
     from typing import override
 except ImportError:
     from typing_extensions import override
+from bdb import effective
 from transformers import AutoModel
 from mini_trainer.osft_utils import MODEL_CONFIGS
 import numpy as np
@@ -134,6 +135,23 @@ class BasicEstimator:
         return (self.tokens_per_gpu * self.main_dtype_bytes  * self.num_layers * self.hidden_size)
 
 
+    def _get_vocab_size(self):
+        """
+        Get the vocabulary size of the model
+        """
+        try:
+            vocab_size = self.model.embed_tokens.num_embeddings
+        except AttributeError:
+            try:
+                vocab_size = self.model.config.vocab_size
+            except AttributeError:
+                try:
+                    vocab_size = self.model.get_input_embeddings().num_embeddings
+                except AttributeError as e:
+                    raise ValueError("Could not find the given model's vocabulary size") from e
+        return vocab_size
+
+
     def _calc_outputs(self):
         """
         Calculate the VRAM for storing the model's activated outputs.
@@ -141,16 +159,7 @@ class BasicEstimator:
         """
         if not self.use_liger:
             # This nested try-catch attempts to find the model's vocabulary size
-            try:
-                vocab_size = self.model.embed_tokens.num_embeddings
-            except AttributeError:
-                try:
-                    vocab_size = self.model.config.vocab_size
-                except AttributeError:
-                    try:
-                        vocab_size = self.model.get_input_embeddings().num_embeddings
-                    except AttributeError as e:
-                        raise ValueError("Could not find the given model's vocabulary size") from e
+            vocab_size = self._get_vocab_size()
             return (self.tokens_per_gpu * self.main_dtype_bytes * vocab_size) * self.output_constant
         else:
             return 0
@@ -249,6 +258,30 @@ class BasicEstimator:
             print(min_message)
             print(mid_message)
             print(max_message)
+        
+
+    def _calc_subtotal(self):
+        """
+        Calculate the amount of memory expected before applying overhead.
+        """
+        # Calculate each piece of memory to be factored into the estimation
+        gpu_vram_par = self._calc_model_params()
+        gpu_vram_opt: int = self._calc_optimizer()
+        gpu_vram_grad: int = self._calc_gradients()
+        gpu_vram_act: int = self._calc_intermediate_activations()
+        gpu_vram_outputs: int = self._calc_outputs()
+        gpu_vram_additional: int = self._calc_additional()
+
+        # Sum up each proposed amount of memory
+        subtotal: int = gpu_vram_par + \
+                        gpu_vram_opt + \
+                        gpu_vram_grad + \
+                        gpu_vram_act + \
+                        gpu_vram_outputs + \
+                        gpu_vram_additional
+
+        return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
+            gpu_vram_act, gpu_vram_outputs, gpu_vram_additional
 
 
     def estimate(self) -> tuple[int, int, int]:
@@ -268,21 +301,8 @@ class BasicEstimator:
                 upper_bound (int): The upper bound of the memory usage (in bytes)
         """  
 
-        # Calculate each piece of memory to be factored into the estimation
-        gpu_vram_par = self._calc_model_params()
-        gpu_vram_opt: int = self._calc_optimizer()
-        gpu_vram_grad: int = self._calc_gradients()
-        gpu_vram_act: int = self._calc_intermediate_activations()
-        gpu_vram_outputs: int = self._calc_outputs()
-        gpu_vram_additional: int = self._calc_additional()
-
-        # Sum up each proposed amount of memory
-        subtotal: int = gpu_vram_par + \
-                        gpu_vram_opt + \
-                        gpu_vram_grad + \
-                        gpu_vram_act + \
-                        gpu_vram_outputs + \
-                        gpu_vram_additional
+        subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
+            gpu_vram_act, gpu_vram_outputs, gpu_vram_additional = self._calc_subtotal()
     
         # Apply some proportion of overhead to get the final memory calculations
         results, overhead = self._apply_overhead(subtotal)
@@ -299,6 +319,21 @@ class BasicEstimator:
         # Return the lower bound, estimated value, and upper bound 
         return results 
 
+    def _find_valid_layers(self):
+        """
+        Check to see which terms need to be included in the search for valid layers
+        """
+        target_terms = MODEL_CONFIGS['default']['patterns']
+        lowered_model_path = self.model_path.lower()
+        if lowered_model_path.find('phi-3') > -1:
+            target_terms = MODEL_CONFIGS['phi3']['patterns']
+            return target_terms
+        for key in MODEL_CONFIGS.keys():
+            if lowered_model_path.find(key.lower()) > -1:
+                target_terms = MODEL_CONFIGS[key]['patterns']
+                return target_terms
+        return target_terms
+
 
 class LoRAEstimator(BasicEstimator):
     """
@@ -314,21 +349,22 @@ class LoRAEstimator(BasicEstimator):
         num_gpus: int = 8,
         gpu_memory: int = 85899345920,
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        effective_batch_size: int | None = None,
+        batch_size: int | None = None,
         max_seq_len: int | None = None,
-        max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
         trust_remote_code: bool = False,
         lora_r: int = 32,
     ):
-        super().__init__(num_gpus, gpu_memory, model_path,
-                        effective_batch_size, max_seq_len, max_tokens_per_gpu, 
-                        use_liger, verbose, trust_remote_code)
+        super().__init__(num_gpus, gpu_memory, model_path, batch_size, max_seq_len,
+                            None, use_liger, verbose, trust_remote_code)
+
+        self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
         
-        self.LOW_MULTIPLIER = 1.0
+        self.LOW_MULTIPLIER = 0.95
         self.MEDIUM_MULTIPLIER = 1.1
-        self.HIGH_MULTIPLIER = 1.3        
+        self.HIGH_MULTIPLIER = 1.2
 
         self.main_dtype_bytes = FLOAT16_BYTES_N
         self.model_bytes = FLOAT16_BYTES_N
@@ -336,23 +372,11 @@ class LoRAEstimator(BasicEstimator):
         self.tokens_per_gpu = max_seq_len
         self.lora_r = lora_r
 
+        self.target_terms = self._find_valid_layers()
+
         self.AB_params = self._resolve_lora()
 
-        self._find_valid_layers()
-
         print(self.AB_params)
-
-
-    def _find_valid_layers(self):
-        """
-        Check to see which terms need to be included in the search for valid layers
-        """
-        self.target_terms = MODEL_CONFIGS['default']['patterns']
-        lowered_model_path = self.model_path.lower()
-        for key in MODEL_CONFIGS.keys():
-            if lowered_model_path.find(key.lower()) > -1:
-                self.target_terms = MODEL_CONFIGS[key]['patterns']
-                break
 
 
     def _resolve_lora(self):
@@ -409,20 +433,50 @@ class LoRAEstimator(BasicEstimator):
         """
         Calculate the VRAM for storing the optimizer states
         """
-        return (FLOAT32_BYTES_N * self.AB_params * self.opt_params / self.num_gpus)
+        return (self.main_dtype_bytes * self.AB_params * self.opt_params / self.num_gpus)
 
     @override
     def _calc_intermediate_activations(self):
         # print(self.AB_params)
-        # return (self.tokens_per_gpu * self.main_dtype_bytes  * self.num_layers * self.hidden_size) # + (self.AB_params * self.main_dtype_bytes * self.tokens_per_gpu)
-        return 0
+        print(self.num_layers * self.hidden_size)
+        print(self.AB_params)
+        return (self.batch_size * self.max_seq_len * self.main_dtype_bytes * self.num_layers * self.hidden_size) # + (self.AB_params * self.main_dtype_bytes * self.tokens_per_gpu)
 
     @override
     def _calc_outputs(self):
+        # """
+        #Calculate the VRAM for storing the model's activated outputs.
+        # """
+        vocab_size = self._get_vocab_size()
+        return (self.max_seq_len * self.main_dtype_bytes * self.batch_size * vocab_size) * 2 # * self.output_constant
+
+
+    @override
+    def _calc_subtotal(self):
         """
-        Calculate the VRAM for storing the model's activated outputs.
+        Calculate the amount of memory expected before applying overhead.
         """
-        return 0
+        # Calculate each piece of memory to be factored into the estimation
+        gpu_vram_par = self._calc_model_params()
+        gpu_vram_opt: int = self._calc_optimizer()
+        gpu_vram_grad: int = self._calc_gradients()
+        gpu_vram_act: int = self._calc_intermediate_activations()
+        gpu_vram_outputs: int = self._calc_outputs()
+        gpu_vram_additional: int = self._calc_additional()
+
+        if gpu_vram_grad > gpu_vram_outputs: gpu_vram_outputs = 0
+        else: gpu_vram_grad = 0
+
+        # Sum up each proposed amount of memory
+        subtotal: int = gpu_vram_par + \
+                        gpu_vram_opt + \
+                        gpu_vram_grad + \
+                        gpu_vram_act + \
+                        gpu_vram_outputs + \
+                        gpu_vram_additional
+
+        return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
+            gpu_vram_act, gpu_vram_outputs, gpu_vram_additional
 
 
 class QLoRAEstimator(LoRAEstimator):
@@ -436,18 +490,33 @@ class QLoRAEstimator(LoRAEstimator):
         num_gpus: int = 8,
         gpu_memory: int = 85899345920,
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        effective_batch_size: int | None = None,
+        batch_size: int | None = None,
         max_seq_len: int | None = None,
-        max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
         trust_remote_code: bool = False,
         lora_r: int = 32,
     ):
-        super().__init__(num_gpus, gpu_memory, model_path,
-                        effective_batch_size, max_seq_len, max_tokens_per_gpu, 
+        super().__init__(num_gpus, gpu_memory, model_path, batch_size, max_seq_len, 
                         use_liger, verbose, trust_remote_code, lora_r)
+        self.HIGH_MULTIPLIER = 1.3
         self.model_bytes = FLOAT4_BYTES_N
+
+
+    @override
+    def _calc_subtotal(self):
+        """
+        Calculate the amount of memory expected before applying overhead.
+        """
+        subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
+            gpu_vram_act, gpu_vram_outputs, gpu_vram_additional = super()._calc_subtotal()
+
+        offload_memory = self.num_params * FLOAT8_BYTES_N
+        if subtotal < offload_memory:
+            return offload_memory, offload_memory, 0, 0, 0, 0, 0
+        else:
+            return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
+                gpu_vram_act, gpu_vram_outputs, gpu_vram_additional
 
 
 class OSFTEstimatorExperimental(BasicEstimator):
@@ -486,10 +555,7 @@ class OSFTEstimatorExperimental(BasicEstimator):
             raise ValueError("Ratio must be in the range [0, 1]")
 
         # Check to see which terms need to be included in the search for valid layers
-        self.target_terms = MODEL_CONFIGS['default']['patterns']
-        for key in MODEL_CONFIGS.keys():
-            if self.model_path.find(key) > -1:
-                self.target_terms = MODEL_CONFIGS[key]['patterns']
+        self.target_terms = self._find_valid_layers()
 
 
     def _check_layer_params(
@@ -549,7 +615,6 @@ class OSFTEstimatorExperimental(BasicEstimator):
     def estimate(self) -> tuple[int, int, int]:
         print("CAUTION: This estimator for OSFT's memory requirements is still under development.\n" +
                 "Actual memory requirements may vary from the given estimate.")
-
         return super().estimate()
 
 
@@ -678,7 +743,6 @@ def estimate(
                                 model_path,
                                 effective_batch_size,
                                 max_seq_len,
-                                max_tokens_per_gpu,
                                 use_liger,
                                 verbose,
                                 trust_remote_code,
@@ -690,7 +754,6 @@ def estimate(
                                 model_path,
                                 effective_batch_size,
                                 max_seq_len,
-                                max_tokens_per_gpu,
                                 use_liger,
                                 verbose,
                                 trust_remote_code,
@@ -709,3 +772,28 @@ def estimate(
                                 )
     
     return estimator.estimate()
+
+models = [
+    "ibm-granite/granite-3.3-2b-instruct",
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "meta-llama/Llama-3.2-3B-Instruct",
+    "Qwen/Qwen2.5-1.5B-Instruct",
+    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    "microsoft/Phi-3.5-mini-instruct",
+    "meta-llama/Llama-3.2-3B-Instruct", 
+    "Qwen/Qwen2.5-3B-Instruct", 
+    "ibm-granite/granite-3.3-8b-instruct",
+    "Qwen/Qwen2.5-7B-Instruct",
+]
+
+for model in models:
+    for lora_r in [32, 256]:
+        print(model)
+        estimate_tuple = estimate(training_method="lora",
+                        model_path=model,
+                        lora_r=lora_r,
+                        num_gpus=1,
+                        effective_batch_size=1,
+                        max_seq_len=1250,
+                        verbose=0)
+        print(estimate_tuple[0] / 1073741824, estimate_tuple[1] / 1073741824, estimate_tuple[2] / 1073741824)
