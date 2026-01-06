@@ -84,11 +84,13 @@ class BasicEstimator:
         self.model_path = model_path
         self.use_liger = use_liger
         self.verbose = verbose
+
+        self.storage_path = os.path.join(os.path.split(os.path.realpath(__file__))[0], "model_storage.csv")
         
         # Load model information from the CSV, or load it directly if it's not in the CSV.
         self.found_model = False
-        if os.path.exists("model_storage.csv"):
-            read_csv = pd.read_csv("model_storage.csv", index_col='name') 
+        if os.path.exists(self.storage_path):
+            read_csv = pd.read_csv(self.storage_path, index_col='name') 
             self.model_storage = read_csv.to_dict(orient='index')
             if model_path in self.model_storage:
                 tmp = self.model_storage[model_path]
@@ -99,13 +101,13 @@ class BasicEstimator:
                     self.found_model = True
                     self.model = tmp
                 else:
-                    warnings.warn("Model missing necessary parameters. Loading model directly from HuggingFace.")
+                    warnings.warn("Model missing necessary parameters. Loading model directly (this may require downloading the model from HuggingFace).")
                     self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
             else:
-                warnings.warn("Model not found in the CSV. Loading model directly from HuggingFace.")
+                warnings.warn("Model not found in the CSV. Loading model directly (this may require downloading the model from HuggingFace).")
                 self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
         else:
-            warnings.warn("No CSV file found. Loading model directly from HuggingFace.")
+            warnings.warn("No CSV file found. Loading model directly (this may require downloading the model from HuggingFace).")
             self.model_storage = {}
             self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
 
@@ -147,7 +149,7 @@ class BasicEstimator:
                 'osft_params': self._calc_osft_params()
             }
         data_out = pd.DataFrame.from_dict(self.model_storage, orient='index')
-        data_out.to_csv("model_storage.csv", index=True, index_label='name')
+        data_out.to_csv(self.storage_path, index=True, index_label='name')
 
 
     def _resolve_tokens_per_gpu(self, effective_batch_size: int | None, max_seq_len: int | None, max_tokens_per_gpu: int | None):
@@ -500,6 +502,8 @@ class LoRAEstimator(BasicEstimator):
                 self.weight_size_total = self.model.weight_size_total
             else:
                 self.found_model = False
+                warnings.warn("Could not find the number of LoRA-relevant parameters in the CSV cache." +
+                                "\nLoading model directly (this may require downloading the model from HuggingFace).")
                 self.model = AutoModel.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
                 self._update_model_storage()
                 self.weight_size_total = self._calc_weight_size(self._find_valid_layers())
@@ -662,6 +666,8 @@ class OSFTEstimatorExperimental(BasicEstimator):
                 self.osft_params = self.model.osft_params
             else:
                 self.found_model = False
+                warnings.warn("Could not find the number of OSFT parameters in the CSV cache." +
+                                "\nLoading model directly (this may require downloading the model from HuggingFace).")
                 self.model = AutoModel.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
                 self.osft_params = self._calc_osft_params()
                 self._update_model_storage()
@@ -807,4 +813,3 @@ def estimate(
                                     max_tokens_per_gpu, use_liger, verbose, trust_remote_code)
     
     return estimator.estimate()
-
