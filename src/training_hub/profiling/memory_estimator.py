@@ -2,9 +2,13 @@ try:
     from typing import override
 except ImportError:
     from typing_extensions import override
+import warnings
+from torch.utils import data
 from transformers import AutoModel
-from torch import numel
 from mini_trainer.osft_utils import MODEL_CONFIGS
+
+import os
+import pandas as pd
 
 """
 Code assisted by Cursor/Claude4
@@ -13,7 +17,7 @@ Code assisted by Cursor/Claude4
 # Constants that specify
 FLOAT32_BYTES_N: int = 4
 FLOAT16_BYTES_N: int = 2
-FLOAT8_BYTES_N: int = 1
+FLOAT8_BYTES_N: int = 10
 FLOAT4_BYTES_N: float = 0.5
 ADAMW_PARAMS_N: int = 2
 
@@ -24,6 +28,22 @@ def ROUNDER(value: int) -> str: return str(round(value / 1073741824, 1))
 # will be affecting the OSFT estimation (through a quadratic mapping where
 # 0 is 0.5 of SFT's value, 1/3 is equal to SFT's value, and 1 is twice of SFT's value)
 def OSFT_RATIO(value: float) -> float: return 0.5 + (1.5 * value)
+
+
+class _ModelStorage:
+    """
+    To reduce the amount of hard disk space and RAM needed to run the estimator, we're going
+    to store the essential information of various models into a CSV file. This CSV
+    will be updated whenever a new model is used for the estimator. 
+    """
+    def __init__(self, data_dict: dict):
+        self.num_params = data_dict['num_params'] if 'num_params' in data_dict else None
+        self.num_trainable_params = data_dict['num_trainable_params'] if 'num_trainable_params' in data_dict else None
+        self.num_layers = data_dict['num_layers'] if 'num_layers' in data_dict else None
+        self.hidden_size = data_dict['hidden_size'] if 'hidden_size' in data_dict else None
+        self.vocab_size = data_dict['vocab_size'] if 'vocab_size' in data_dict else None
+        self.weight_size_total = data_dict['weight_size_total'] if 'weight_size_total' in data_dict else None
+        self.osft_params = data_dict['osft_params'] if 'osft_params' in data_dict else None
 
 
 class BasicEstimator:
@@ -65,33 +85,77 @@ class BasicEstimator:
         self.use_liger = use_liger
         self.verbose = verbose
         
-        # Load model directly
-        self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+        # Load model information from the CSV, or load it directly if it's not in the CSV.
+        self.found_model = False
+        if os.path.exists("model_storage.csv"):
+            read_csv = pd.read_csv("model_storage.csv", index_col='name') 
+            self.model_storage = read_csv.to_dict(orient='index')
+            if model_path in self.model_storage:
+                tmp = self.model_storage[model_path]
+                tmp = _ModelStorage(tmp)
+                if hasattr(tmp, 'num_params') and hasattr(tmp, 'num_trainable_params') \
+                    and hasattr(tmp, 'num_layers') and hasattr(tmp, 'hidden_size') \
+                    and (hasattr(tmp, 'vocab_size') or self.use_liger):
+                    self.found_model = True
+                    self.model = tmp
+                else:
+                    warnings.warn("Model missing necessary parameters. Loading model directly from HuggingFace.")
+                    self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+            else:
+                warnings.warn("Model not found in the CSV. Loading model directly from HuggingFace.")
+                self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+        else:
+            warnings.warn("No CSV file found. Loading model directly from HuggingFace.")
+            self.model_storage = {}
+            self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
 
         # Determine parameters needed for calculations
-        self.num_params: int = self.model.num_parameters(only_trainable=False)
-        self.num_trainable_params: int = self.model.num_parameters(only_trainable=True)
-        self.num_layers: int = self.model.config.num_hidden_layers
-        self.hidden_size: int = self.model.config.hidden_size  
+        self.num_params: int = self.model.num_params if hasattr(self.model, 'num_params') else self.model.num_parameters(only_trainable=False)
+        self.num_trainable_params: int = self.model.num_trainable_params if hasattr(self.model, 'num_trainable_params') else self.model.num_parameters(only_trainable=True)
+        self.num_layers: int = self.model.config.num_hidden_layers if hasattr(self.model, 'config') else self.model.num_layers
+        self.hidden_size: int = self.model.config.hidden_size if hasattr(self.model, 'config') else self.model.hidden_size
 
         # This is a scalar that's applied during the output memory calculation
         self.output_constant = 8/3
         self.main_dtype_bytes = FLOAT32_BYTES_N
         self.opt_params = ADAMW_PARAMS_N
 
+        # Set the multipliers to define the estimation bounds
         self.LOW_MULTIPLIER = 1.0
         self.MEDIUM_MULTIPLIER = 1.1
         self.HIGH_MULTIPLIER = 1.3
 
+        # Determine how many tokens will be placed on each GPU
         self._resolve_tokens_per_gpu(effective_batch_size, max_seq_len, max_tokens_per_gpu)
+
+        # Update the CSV if necessary.
+        if not self.found_model: self._update_model_storage()
+
+
+    def _update_model_storage(self):
+        """
+        Utility function to store the models' information into a CSV. 
+        """
+        self.model_storage[self.model_path] = \
+            {
+                'num_params': self.num_params,
+                'num_trainable_params': self.num_trainable_params,
+                'num_layers': self.num_layers,
+                'hidden_size': self.hidden_size,
+                'vocab_size': self._get_vocab_size(),
+                'weight_size_total': self._calc_weight_size(self._find_valid_layers()),
+                'osft_params': self._calc_osft_params()
+            }
+        data_out = pd.DataFrame.from_dict(self.model_storage, orient='index')
+        data_out.to_csv("model_storage.csv", index=True, index_label='name')
+
 
     def _resolve_tokens_per_gpu(self, effective_batch_size: int | None, max_seq_len: int | None, max_tokens_per_gpu: int | None):
         """
         Determine how many tokens will be placed on each GPU during each mini-batch
+        It will be bounded by either the largest number of tokens in a batch (divided by # GPUs)
+        *or* the value of max_tokens_per_gpu.
         """
-        # The number of tokens on each GPU will be bounded by either
-        # The largest number of tokens in a batch (divided by # GPUs)
-        # *or* the value of max_tokens_per_gpu
         self.tokens_per_gpu = None            
         if effective_batch_size is None or max_seq_len is None:
             self.tokens_per_gpu: int = max_tokens_per_gpu
@@ -104,6 +168,71 @@ class BasicEstimator:
         if self.tokens_per_gpu is None:
             raise ValueError("At least one of (effective_batch_size, max_seq_len) or " +
                                 "max_tokens_per_gpu must be provided")
+
+
+    def _calc_weight_size(self, target_terms: list[str]):
+        """
+        Determine how many parameters will be considered by in LoRA's low rank matrices
+        """
+        # Get the total dimensionality of weight matrices in this model
+        weight_size_total = 0
+
+        # Iterate through all layers...
+        for layer_name in self.model.state_dict().keys():
+            # Check to see if this current layer is a weight matrix
+            layer_data = self.model.state_dict()[layer_name]
+            if layer_data.dim() < 2 or layer_name.find('weight') <= -1: continue
+            else:
+                # If so, check to see if this weight is one of the weights
+                # we are looking for.
+                for term in target_terms:
+                    if layer_name.find(term) > -1:
+                        # If so, add the input and output of the matrix to our accumulator
+                        weight_size_total += (layer_data.shape[0] + layer_data.shape[1])
+        
+        return weight_size_total
+
+
+    def _calc_osft_params(self) -> int:
+        """
+        Iterate through the layers in this model and determine how
+        many bytes would be needed to store this model when trained with OSFT
+        """
+        if hasattr(self.model, 'total_bytes'): 
+            total_bytes = self.model.total_bytes
+        else:
+            total_bytes: int = 0
+            for layer_name in self.model.state_dict().keys():
+                total_bytes += self._check_layer_params(layer_name)
+        return total_bytes
+
+
+    def _check_layer_params(
+                        self,
+                        layer_name: str
+                    ) -> int:
+        """
+        For the given layer, determine how many bytes would be needed
+        to store this layer when trained with OSFT
+        """
+
+        # If the layer is trainable, i.e. it contains any of these terms,
+        # then we will need to store a SVD decomposition of the layer in memory.
+        layer_data = self.model.state_dict()[layer_name]
+        if layer_data.dim() < 2:
+            return layer_data.numel() * FLOAT32_BYTES_N
+        for term in self._find_valid_layers():
+            lowest_dim = layer_data.shape[0] if layer_data.shape[0] < \
+                            layer_data.shape[1] else layer_data.shape[1]
+            if layer_name.find(term) > -1 and layer_name.find('weight') > -1:
+                U_bytes_n: int = layer_data.shape[0] * lowest_dim
+                S_bytes_n: int = lowest_dim
+                V_bytes_n: int = lowest_dim * layer_data.shape[1]
+                return (U_bytes_n + S_bytes_n + V_bytes_n) * FLOAT32_BYTES_N
+
+        # If not, we'll only be storing the layer itself in memory. 
+        byte_val = layer_data.numel() * FLOAT32_BYTES_N
+        return byte_val
 
 
     def _calc_model_params(self):
@@ -138,16 +267,17 @@ class BasicEstimator:
         """
         Get the vocabulary size of the model
         """
-        try:
+        if hasattr(self.model, 'embed_tokens') and hasattr(self.model.embed_tokens, 'num_embeddings'):
             vocab_size = self.model.embed_tokens.num_embeddings
-        except AttributeError:
+        elif hasattr(self.model, 'config') and hasattr(self.model.config, 'vocab_size'):
+            vocab_size = self.model.config.vocab_size
+        elif hasattr(self.model, 'vocab_size'):
+            vocab_size = self.model.vocab_size
+        else:
             try:
-                vocab_size = self.model.config.vocab_size
-            except AttributeError:
-                try:
-                    vocab_size = self.model.get_input_embeddings().num_embeddings
-                except AttributeError as e:
-                    raise ValueError("Could not find the given model's vocabulary size") from e
+                vocab_size = self.model.get_input_embeddings().num_embeddings
+            except AttributeError as e:
+                raise ValueError("Could not find the given model's vocabulary size") from e
         return vocab_size
 
 
@@ -158,8 +288,8 @@ class BasicEstimator:
         """
         if not self.use_liger:
             # This nested try-catch attempts to find the model's vocabulary size
-            vocab_size = self._get_vocab_size()
-            return (self.tokens_per_gpu * self.main_dtype_bytes * vocab_size) * self.output_constant
+            self.vocab_size = self._get_vocab_size()
+            return (self.tokens_per_gpu * self.main_dtype_bytes * self.vocab_size) * self.output_constant
         else:
             return 0
 
@@ -365,34 +495,17 @@ class LoRAEstimator(BasicEstimator):
         self.model_bytes = FLOAT16_BYTES_N
 
         # Determine the number of parameters needed by LoRA
-        self.AB_params = self._resolve_lora(lora_r, self._find_valid_layers())
-
-
-    def _resolve_lora(self, lora_r: int, target_terms: list[str]):
-        """
-        Determine how many parameters will be in LoRA's low rank matrices
-        """
-        # Get the total dimensionality of weight matrices in this model
-        weight_size_total = 0
-
-        # Iterate through all layers...
-        for layer_name in self.model.state_dict().keys():
-            # Check to see if this current layer is a weight matrix
-            layer_data = self.model.state_dict()[layer_name]
-            if layer_data.dim() < 2 or layer_name.find('weight') <= -1: continue
+        if self.found_model:
+            if hasattr(self.model, 'weight_size_total'):
+                self.weight_size_total = self.model.weight_size_total
             else:
-                # If so, check to see if this weight is one of the weights
-                # we are looking for.
-                for term in target_terms:
-                    if layer_name.find(term) > -1:
-                        # If so, add the input and output of the matrix to our accumulator
-                        weight_size_total += layer_data.numel()
-        
-        # Count the parameters as the total size of all matrices that would be formed 
-        # Simply put, we just multiply our accumulated total by lora_r
-        AB_params = weight_size_total * lora_r
-
-        return AB_params
+                self.found_model = False
+                self.model = AutoModel.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
+                self._update_model_storage()
+                self.weight_size_total = self._calc_weight_size(self._find_valid_layers())
+        else:
+            self.weight_size_total = self._calc_weight_size(self._find_valid_layers())
+        self.AB_params = self.weight_size_total * lora_r
 
 
     @override
@@ -413,6 +526,7 @@ class LoRAEstimator(BasicEstimator):
         For LORA, we include the memory used by the low rank matrices
         """
         return ((self.num_params * self.model_bytes) + (self.AB_params * FLOAT32_BYTES_N)) / self.num_gpus
+
 
     @override
     def _calc_gradients(self):
@@ -542,52 +656,24 @@ class OSFTEstimatorExperimental(BasicEstimator):
         # Check to see which terms need to be included in the search for valid layers
         self.target_terms = self._find_valid_layers()
 
-
-    def _check_layer_params(
-                        self,
-                        layer_name: str
-                    ) -> int:
-        """
-        For the given layer, determine how many bytes would be needed
-        to store this layer when trained with OSFT
-        """
-
-        # If the layer is trainable, i.e. it contains any of these terms,
-        # then we will need to store a SVD decomposition of the layer in memory.
-        layer_data = self.model.state_dict()[layer_name]
-        if layer_data.dim() < 2:
-            return layer_data.numel() * FLOAT32_BYTES_N
-        for term in self.target_terms:
-            lowest_dim = layer_data.shape[0] if layer_data.shape[0] < \
-                            layer_data.shape[1] else layer_data.shape[1]
-            if layer_name.find(term) > -1 and layer_name.find('weight') > -1:
-                U_bytes_n: int = layer_data.shape[0] * lowest_dim
-                S_bytes_n: int = lowest_dim
-                V_bytes_n: int = lowest_dim * layer_data.shape[1]
-                return (U_bytes_n + S_bytes_n + V_bytes_n) * FLOAT32_BYTES_N
-
-        # If not, we'll only be storing the layer itself in memory. 
-        byte_val = layer_data.numel() * FLOAT32_BYTES_N
-        return byte_val
-
-
-    def _calc_osft_params(self) -> int:
-        """
-        Iterate through the layers in this model and determine how
-        many bytes would be needed to store this model when trained with OSFT
-        """
-        total_bytes: int = 0
-        for layer_name in self.model.state_dict().keys():
-            total_bytes += self._check_layer_params(layer_name)
-        return total_bytes
-
+        # Determine the number of additional OSFT params
+        if self.found_model:
+            if hasattr(self.model, 'osft_params'):
+                self.osft_params = self.model.osft_params
+            else:
+                self.found_model = False
+                self.model = AutoModel.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
+                self.osft_params = self._calc_osft_params()
+                self._update_model_storage()
+        else:
+            self.osft_params = self._calc_osft_params()
 
     @override
     def _calc_model_params(self):
         """
         Override the model parameter calculation by calculating based on OSFT's parameters
         """
-        return self._calc_osft_params() / self.num_gpus 
+        return self.osft_params / self.num_gpus 
 
     @override
     def _calc_gradients(self):
@@ -721,3 +807,4 @@ def estimate(
                                     max_tokens_per_gpu, use_liger, verbose, trust_remote_code)
     
     return estimator.estimate()
+
