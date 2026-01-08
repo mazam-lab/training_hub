@@ -3,9 +3,11 @@ try:
 except ImportError:
     from typing_extensions import override
 import warnings
+import torch
 from torch.utils import data
 from transformers import AutoModel
 from mini_trainer.osft_utils import MODEL_CONFIGS
+import json
 
 import os
 import pandas as pd
@@ -17,7 +19,7 @@ Code assisted by Cursor/Claude4
 # Constants that specify
 FLOAT32_BYTES_N: int = 4
 FLOAT16_BYTES_N: int = 2
-FLOAT8_BYTES_N: int = 10
+FLOAT8_BYTES_N: int = 1
 FLOAT4_BYTES_N: float = 0.5
 ADAMW_PARAMS_N: int = 2
 
@@ -92,7 +94,7 @@ class BasicEstimator:
         if os.path.exists(self.storage_path):
             read_csv = pd.read_csv(self.storage_path, index_col='name') 
             self.model_storage = read_csv.to_dict(orient='index')
-            if model_path in self.model_storage:
+            if False: #model_path in self.model_storage:
                 tmp = self.model_storage[model_path]
                 tmp = _ModelStorage(tmp)
                 if hasattr(tmp, 'num_params') and hasattr(tmp, 'num_trainable_params') \
@@ -102,14 +104,17 @@ class BasicEstimator:
                     self.model = tmp
                 else:
                     warnings.warn("Model missing necessary parameters. Loading model directly (this may require downloading the model from HuggingFace).")
-                    self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+                    with torch.device('meta'):
+                        self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
             else:
                 warnings.warn("Model not found in the CSV. Loading model directly (this may require downloading the model from HuggingFace).")
-                self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+                with torch.device('meta'):
+                    self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
         else:
             warnings.warn("No CSV file found. Loading model directly (this may require downloading the model from HuggingFace).")
             self.model_storage = {}
-            self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+            with torch.device('meta'):
+                self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
 
         # Determine parameters needed for calculations
         self.num_params: int = self.model.num_params if hasattr(self.model, 'num_params') else self.model.num_parameters(only_trainable=False)
@@ -200,12 +205,9 @@ class BasicEstimator:
         Iterate through the layers in this model and determine how
         many bytes would be needed to store this model when trained with OSFT
         """
-        if hasattr(self.model, 'total_bytes'): 
-            total_bytes = self.model.total_bytes
-        else:
-            total_bytes: int = 0
-            for layer_name in self.model.state_dict().keys():
-                total_bytes += self._check_layer_params(layer_name)
+        total_bytes: int = 0
+        for layer_name in self.model.state_dict().keys():
+            total_bytes += self._check_layer_params(layer_name)
         return total_bytes
 
 
@@ -504,7 +506,8 @@ class LoRAEstimator(BasicEstimator):
                 self.found_model = False
                 warnings.warn("Could not find the number of LoRA-relevant parameters in the CSV cache." +
                                 "\nLoading model directly (this may require downloading the model from HuggingFace).")
-                self.model = AutoModel.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
+                with torch.device('meta'):
+                    self.model = AutoModel.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
                 self._update_model_storage()
                 self.weight_size_total = self._calc_weight_size(self._find_valid_layers())
         else:
@@ -668,7 +671,8 @@ class OSFTEstimatorExperimental(BasicEstimator):
                 self.found_model = False
                 warnings.warn("Could not find the number of OSFT parameters in the CSV cache." +
                                 "\nLoading model directly (this may require downloading the model from HuggingFace).")
-                self.model = AutoModel.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
+                with torch.device('meta'):
+                    self.model = AutoModel.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
                 self.osft_params = self._calc_osft_params()
                 self._update_model_storage()
         else:
