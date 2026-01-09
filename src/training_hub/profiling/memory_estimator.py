@@ -37,12 +37,12 @@ class _ModelStorage:
         load_param = lambda key: data[key] if key in data else None # store None if the param doesn't exist
 
         self.num_params = load_param('num_params')
-        self.num_trainable_params = load_param['num_trainable_params'] 
-        self.num_layers = load_param['num_layers'] 
-        self.hidden_size = load_param['hidden_size']
-        self.vocab_size = load_param['vocab_size']
-        self.weight_size_total = load_param['weight_size_total']
-        self.osft_params = load_param['osft_params'] 
+        self.num_trainable_params = load_param('num_trainable_params')
+        self.num_layers = load_param('num_layers') 
+        self.hidden_size = load_param('hidden_size')
+        self.vocab_size = load_param('vocab_size')
+        self.weight_size_total = load_param('weight_size_total')
+        self.osft_params = load_param('osft_params') 
 
 
 class BasicEstimator:
