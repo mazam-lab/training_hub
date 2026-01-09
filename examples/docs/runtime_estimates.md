@@ -19,9 +19,9 @@ AI Use Disclosure: Please note that all bar plots shown in this document are bas
     - **Granite 4 tends to require some amount of warm-up before its first usage.** The shown times for Granite 4 are for runs where the warm-up does not occur. Typically, the warm-up adds about an additional 1 minute to the runtime.
         - The reasons for and details about this warm-up aren't known at the moment, but will be added when more information is gathered. Please keep in mind Granite 4 is still in preview. 
 - The time measurement is calculated by using the timestamps logged during the training process in the above scripts
-- By default, OSFT makes use of Liger Kernels to improve memory usage and runtime. However, as of Nov 7th 2025, Liger Kernels currently don't have built-in support for Granite 4
-    - As a result, the script was modified for allow Liger Kernels to be disabled for certain experiments
-    - The tables will be updated once support for Liger Kernels is added. 
+- By default, OSFT makes use of Liger Kernels to improve memory usage and runtime.
+    - We have also included tests with Liger disabled for reference.
+- WWhile we did conduct OSFT tests on Granite 4, they have been omitted as **Granite 4 support for OSFT is still in development**. 
 - Many of these tests had the checkpointing hardcoded to be disabled in the script (set `checkpoint_at_epoch=False` and `accelerate_full_state_at_epoch=False`)
     - This does not appear to impact runtime of the actual training loop
     - This was mostly done to conserve disk space due to checkpoints being very large (tens of GB per epoch), which can cause DiskPressure on OpenShift
@@ -40,8 +40,6 @@ The following table shows the amount of time needed to run the first epoch of tr
 | 8x A100s | OSFT             | Granite 3.3 | Bespoke   | 00:58:39                        | 
 | 8x A100s | OSFT (No Liger)  | Granite 3.3 | Table-GPT | 00:37:32                        | 
 | 8x A100s | OSFT (No Liger)  | Granite 3.3 | Bespoke   | 01:00:48                        | 
-| 8x A100s | OSFT (No Liger)  | Granite 4   | Table-GPT | 00:14:11                        | 
-| 8x A100s | OSFT (No Liger)  | Granite 4   | Bespoke   | 00:23:01                        | 
 | 8x H100s | SFT              | Granite 3.3 | Table-GPT | 00:04:35                        | 
 | 8x H100s | SFT              | Granite 3.3 | Bespoke   | 00:35:47                        | 
 | 8x H100s | SFT              | Granite 4   | Table-GPT | 00:05:40                        | 
@@ -50,8 +48,6 @@ The following table shows the amount of time needed to run the first epoch of tr
 | 8x H100s | OSFT             | Granite 3.3 | Bespoke   | 01:15:08                        | 
 | 8x H100s | OSFT (No Liger)  | Granite 3.3 | Table-GPT | 00:46:51                        | 
 | 8x H100s | OSFT (No Liger)  | Granite 3.3 | Bespoke   | 01:16:21                        | 
-| 8x H100s | OSFT (No Liger)  | Granite 4   | Table-GPT | 00:10:39                        | 
-| 8x H100s | OSFT (No Liger)  | Granite 4   | Bespoke   | 00:16:46                        | 
 
 
 ## Granite 3.3 vs Granite 4
@@ -59,15 +55,9 @@ The following table shows the amount of time needed to run the first epoch of tr
 Granite 3.3 is an open source **8B Parameter Large Language** Instruct model https://huggingface.co/ibm-granite/granite-3.3-8b-instruct
 Granite 4 is still in preview stages, for these runs we use Tiny Preview, which is an open source **7B Parameter Hybrid Mixture-of-Experts** Instruct Model https://huggingface.co/ibm-granite/granite-4.0-tiny-preview 
 
-### Graphs
+### Graph
 
-![A graph comparing Granite 3.3 with Granite 4 for SFT][sftm]
-
-[sftm]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/sft_models.png?raw=true ""
-
-![A graph comparing Granite 3.3 with Granite 4 OSFT][osftm]
-
-[osftm]: https://github.com/mazam-lab/training_hub/blob/main/examples/docs/osft_models.png?raw=true ""
+<img src="sft_models.png" alt="A graph comparing Granite 3.3 with Granite 4 for SFT" width="900"/>
 
 ### Tabled differences
 
@@ -75,12 +65,8 @@ Granite 4 is still in preview stages, for these runs we use Tiny Preview, which 
 | -------- | ---------------- | --------- | ---------------- | -------------- | ------------------ | --------------- |
 | 8x A100s | SFT              | Table-GPT | 00:10:01         | 00:07:35       | 00:02:26           | 0.76x           |                 
 | 8x A100s | SFT              | Bespoke   | 01:17:02         | 00:42:48       | 00:34:14           | 0.55x           |
-| 8x A100s | OSFT (No Liger)  | Table-GPT | 00:37:32         | 00:14:11       | 00:23:21           | 0.38x           |
-| 8x A100s | OSFT (No Liger)  | Bespoke   | 01:00:48         | 00:23:01       | 00:37:47           | 0.38x           |
 | 8x H100s | SFT              | Table-GPT | 00:04:35         | 00:05:40       | 00:01:05           | 1.24x           |
 | 8x H100s | SFT              | Bespoke   | 00:35:47         | 00:26:19       | 00:09:28           | 0.74x           |
-| 8x H100s | OSFT (No Liger)  | Table-GPT | 00:46:51         | 00:10:39       | 00:36:12           | 0.23x           |
-| 8x H100s | OSFT (No Liger)  | Bespoke   | 01:16:21         | 00:16:46       | 00:59:35           | 0.22x           |
 
 
 ## A100 vs H100
@@ -102,8 +88,6 @@ As mentioned, please note that the A100 setup is on an SSHed machine running con
 | OSFT            | Granite 3.3 | Bespoke   | 00:58:39  | 01:15:08  | 00:16:29           | 1.28x           |
 | OSFT (No Liger) | Granite 3.3 | Table-GPT | 00:37:32  | 00:46:51  | 00:09:19           | 1.25x           |
 | OSFT (No Liger) | Granite 3.3 | Bespoke   | 01:00:48  | 01:16:21  | 00:15:33           | 1.26x           |
-| OSFT (No Liger) | Granite 4   | Table-GPT | 00:14:11  | 00:10:39  | 00:03:32           | 0.75x           |
-| OSFT (No Liger) | Granite 4   | Bespoke   | 00:23:01  | 00:16:46  | 00:06:15           | 0.73x           |
 
 
 ## Table-GPT vs Bespoke
@@ -147,12 +131,10 @@ Due to differences in the tokenizer each model uses, Bespoke has slightly differ
 | 8x A100s | SFT              | Granite 4   | 00:07:35       | 00:42:48     | 00:35:13           | 5.64x      |
 | 8x A100s | OSFT             | Granite 3.3 | 00:36:09       | 00:58:39     | 00:22:30           | 1.62x      |
 | 8x A100s | OSFT (No Liger)  | Granite 3.3 | 00:37:32       | 01:00:48     | 00:23:16           | 1.62x      |
-| 8x A100s | OSFT (No Liger)  | Granite 4   | 00:14:11       | 00:23:01     | 00:08:50           | 1.62x      |
 | 8x H100s | SFT              | Granite 3.3 | 00:04:35       | 00:35:47     | 00:31:12           | 7.81x      |
 | 8x H100s | SFT              | Granite 4   | 00:05:40       | 00:26:19     | 00:20:39           | 4.64x      |
 | 8x H100s | OSFT             | Granite 3.3 | 00:46:04       | 01:15:08     | 00:29:04           | 1.63x      |
 | 8x H100s | OSFT (No Liger)  | Granite 3.3 | 00:46:51       | 01:16:21     | 00:29:30           | 1.63x      |
-| 8x H100s | OSFT (No Liger)  | Granite 4   | 00:10:39       | 00:16:46     | 00:06:07           | 1.57x      |
 
 
 ## SFT vs OSFT 
@@ -176,12 +158,8 @@ For further details on OSFT and how it differs from SFT, please consult [Sculpti
 | ---------| ----------- | --------- | ------------------ | --------------------------------------- | ------------------ | ---------- |
 | 8x A100s | Granite 3.3 | Table-GPT | 00:10:01           | 00:37:32                                | 00:27:31           | 3.75x      |      
 | 8x A100s | Granite 3.3 | Bespoke   | 01:17:02           | 01:00:48                                | 00:16:14           | 0.79x      |
-| 8x A100s | Granite 4   | Table-GPT | 00:07:35           | 00:14:11                                | 00:07:36           | 1.87x      |
-| 8x A100s | Granite 4   | Bespoke   | 00:42:48           | 00:23:01                                | 00:19:47           | 0.54x      |
 | 8x H100s | Granite 3.3 | Table-GPT | 00:04:35           | 00:46:51                                | 00:42:16           | 10.22x     |
 | 8x H100s | Granite 3.3 | Bespoke   | 00:35:47           | 01:16:21                                | 00:40:34           | 2.13x      | 
-| 8x H100s | Granite 4   | Table-GPT | 00:05:40           | 00:10:39                                | 00:04:59           | 1.88x      |
-| 8x H100s | Granite 4   | Bespoke   | 00:26:19           | 00:16:46                                | 00:09:33           | 0.64x      |
 
 
 ### SFT Vs OSFT with the Same max_seq_len and max_tokens_per_gpu Values
@@ -200,14 +178,10 @@ As noted above, many of Bespoke's samples exceed `max_seq_len=4096` used in `osf
 | 8x A100s | OSFT                      | Granite 3.3 | Bespoke   | 00:58:39                        | 
 | 8x A100s | OSFT (No Liger)           | Granite 3.3 | Table-GPT | 00:37:32                        | 
 | 8x A100s | OSFT (No Liger)           | Granite 3.3 | Bespoke   | 01:00:48                        | 
-| 8x A100s | OSFT (No Liger)           | Granite 4   | Table-GPT | 00:14:11                        | 
-| 8x A100s | OSFT (No Liger)           | Granite 4   | Bespoke   | 00:23:01                        | 
 | 8x A100s | Adjusted OSFT             | Granite 3.3 | Table-GPT | **00:34:23**                    | 
 | 8x A100s | Adjusted OSFT             | Granite 3.3 | Bespoke   | **04:01:59**                    | 
 | 8x A100s | Adjusted OSFT (No Liger)  | Granite 3.3 | Table-GPT | **00:35:42**                    | 
 | 8x A100s | Adjusted OSFT (No Liger)  | Granite 3.3 | Bespoke   | **04:11:20**                    | 
-| 8x A100s | Adjusted OSFT (No Liger)  | Granite 4   | Table-GPT | **00:09:06**                    | 
-| 8x A100s | Adjusted OSFT (No Liger)  | Granite 4   | Bespoke   | **00:51:48**                    | 
 | 8x H100s | SFT                       | Granite 3.3 | Table-GPT | 00:04:35                        | 
 | 8x H100s | SFT                       | Granite 3.3 | Bespoke   | 00:35:47                        | 
 | 8x H100s | SFT                       | Granite 4   | Table-GPT | 00:05:40                        | 
@@ -216,14 +190,10 @@ As noted above, many of Bespoke's samples exceed `max_seq_len=4096` used in `osf
 | 8x H100s | OSFT                      | Granite 3.3 | Bespoke   | 01:15:08                        | 
 | 8x H100s | OSFT (No Liger)           | Granite 3.3 | Table-GPT | 00:46:51                        | 
 | 8x H100s | OSFT (No Liger)           | Granite 3.3 | Bespoke   | 01:16:21                        | 
-| 8x H100s | OSFT (No Liger)           | Granite 4   | Table-GPT | 00:10:39                        | 
-| 8x H100s | OSFT (No Liger)           | Granite 4   | Bespoke   | 00:16:46                        | 
 | 8x H100s | Adjusted OSFT             | Granite 3.3 | Table-GPT | **00:44:25**                    | 
 | 8x H100s | Adjusted OSFT             | Granite 3.3 | Bespoke   | **05:10:34**                    | 
 | 8x H100s | Adjusted OSFT (No Liger)  | Granite 3.3 | Table-GPT | **00:45:23**                    | 
 | 8x H100s | Adjusted OSFT (No Liger)  | Granite 3.3 | Bespoke   | **05:16:05**                    | 
-| 8x H100s | Adjusted OSFT (No Liger)  | Granite 4   | Table-GPT | **00:07:26**                    | 
-| 8x H100s | Adjusted OSFT (No Liger)  | Granite 4   | Bespoke   | **00:36:16**                    | 
 
 #### Standard OSFT results (max_seq_len=4096, max_tokens_per_gpu=10000) vs Adjusted OSFT results (max_seq_len=20000, max_tokens_per_gpu=25000) 
 
@@ -233,14 +203,10 @@ As noted above, many of Bespoke's samples exceed `max_seq_len=4096` used in `osf
 | 8x A100s | OSFT             | Granite 3.3 | Bespoke   | 00:58:39                      | 04:01:59                       | 03:03:20           | 4.13x      |
 | 8x A100s | OSFT (No Liger)  | Granite 3.3 | Table-GPT | 00:37:32                      | 00:35:42                       | 00:01:50           | 0.95x      |
 | 8x A100s | OSFT (No Liger)  | Granite 3.3 | Bespoke   | 01:00:48                      | 04:11:20                       | 03:10:32           | 4.13x      |
-| 8x A100s | OSFT (No Liger)  | Granite 4   | Table-GPT | 00:14:11                      | 00:09:06                       | 00:05:05           | 0.64x      |
-| 8x A100s | OSFT (No Liger)  | Granite 4   | Bespoke   | 00:23:01                      | 00:51:48                       | 00:28:47           | 2.25x      |
 | 8x H100s | OSFT             | Granite 3.3 | Table-GPT | 00:46:04                      | 00:44:25                       | 00:01:39           | 0.96x      |
 | 8x H100s | OSFT             | Granite 3.3 | Bespoke   | 01:15:08                      | 05:10:34                       | 03:55:26           | 4.13x      |
 | 8x H100s | OSFT (No Liger)  | Granite 3.3 | Table-GPT | 00:46:51                      | 00:45:23                       | 00:01:28           | 0.97x      |
 | 8x H100s | OSFT (No Liger)  | Granite 3.3 | Bespoke   | 01:16:21                      | 05:16:05                       | 03:59:44           | 4.14x      |
-| 8x H100s | OSFT (No Liger)  | Granite 4   | Table-GPT | 00:10:39                      | 00:07:26                       | 00:03:13           | 0.70x      |
-| 8x H100s | OSFT (No Liger)  | Granite 4   | Bespoke   | 00:16:46                      | 00:36:16                       | 00:19:30           | 2.16x      |
 
 #### SFT vs Adjusted OSFT (No Liger)
 
@@ -248,12 +214,8 @@ As noted above, many of Bespoke's samples exceed `max_seq_len=4096` used in `osf
 | ---------| ----------- | --------- | ------------------ | --------------------------------------- | ------------------ | ---------- |
 | 8x A100s | Granite 3.3 | Table-GPT | 00:10:01           | 00:35:42                                | 00:25:41           | 3.56x      |      
 | 8x A100s | Granite 3.3 | Bespoke   | 01:17:02           | 04:11:20                                | 02:54:18           | 3.26x      |
-| 8x A100s | Granite 4   | Table-GPT | 00:07:35           | 00:09:06                                | 00:01:31           | 1.2x       |
-| 8x A100s | Granite 4   | Bespoke   | 00:42:48           | 00:51:48                                | 00:09:00           | 1.21x      |
 | 8x H100s | Granite 3.3 | Table-GPT | 00:04:35           | 00:45:23                                | 00:40:48           | 9.90x      |
 | 8x H100s | Granite 3.3 | Bespoke   | 00:35:47           | 05:16:05                                | 04:40:18           | 8.83x      | 
-| 8x H100s | Granite 4   | Table-GPT | 00:05:40           | 00:07:26                                | 00:01:46           | 1.31x      |
-| 8x H100s | Granite 4   | Bespoke   | 00:26:19           | 00:36:16                                | 00:09:57           | 1.38x      |
 
 
 ## Appendix: Full Training Results

@@ -4,10 +4,8 @@ except ImportError:
     from typing_extensions import override
 import warnings
 import torch
-from torch.utils import data
 from transformers import AutoModel
 from mini_trainer.osft_utils import MODEL_CONFIGS
-import json
 
 import os
 import pandas as pd
@@ -30,7 +28,6 @@ def ROUNDER(value: int) -> str: return str(round(value / 1073741824, 1))
 # will be affecting the OSFT estimation (through a quadratic mapping where
 # 0 is 0.5 of SFT's value, 1/3 is equal to SFT's value, and 1 is twice of SFT's value)
 def OSFT_RATIO(value: float) -> float: return 0.5 + (1.5 * value)
-
 
 class _ModelStorage:
     """
@@ -88,13 +85,15 @@ class BasicEstimator:
         self.verbose = verbose
 
         self.storage_path = os.path.join(os.path.split(os.path.realpath(__file__))[0], "model_storage.csv")
-        
+
         # Load model information from the CSV, or load it directly if it's not in the CSV.
+        # TODO: Adjust this code so that we download and preprocess the information from safetensors instead
+        # of downloading the entire model. 
         self.found_model = False
         if os.path.exists(self.storage_path):
             read_csv = pd.read_csv(self.storage_path, index_col='name') 
             self.model_storage = read_csv.to_dict(orient='index')
-            if False: #model_path in self.model_storage:
+            if model_path in self.model_storage:
                 tmp = self.model_storage[model_path]
                 tmp = _ModelStorage(tmp)
                 if hasattr(tmp, 'num_params') and hasattr(tmp, 'num_trainable_params') \
@@ -485,6 +484,7 @@ class LoRAEstimator(BasicEstimator):
         trust_remote_code: bool = False,
         lora_r: int = 32,
     ):
+
         super().__init__(num_gpus, gpu_memory, model_path, batch_size, max_seq_len,
                             None, use_liger, verbose, trust_remote_code)
 
@@ -523,6 +523,8 @@ class LoRAEstimator(BasicEstimator):
         For LoRA, we simply use the product of the batch size and sequence length
         to produce the number of tokens
         """
+        if effective_batch_size is None or max_seq_len is None:
+            raise ValueError("effective_batch_size and max_seq_len must be provided")
         self.tokens_per_gpu = effective_batch_size * max_seq_len / self.num_gpus
 
 
