@@ -1,7 +1,5 @@
-try:
-    from typing import override
-except ImportError:
-    from typing_extensions import override
+try: from typing import override
+except ImportError: from typing_extensions import override
 import warnings
 import torch
 from transformers import AutoModel
@@ -35,14 +33,16 @@ class _ModelStorage:
     to store the essential information of various models into a CSV file. This CSV
     will be updated whenever a new model is used for the estimator. 
     """
-    def __init__(self, data_dict: dict):
-        self.num_params = data_dict['num_params'] if 'num_params' in data_dict else None
-        self.num_trainable_params = data_dict['num_trainable_params'] if 'num_trainable_params' in data_dict else None
-        self.num_layers = data_dict['num_layers'] if 'num_layers' in data_dict else None
-        self.hidden_size = data_dict['hidden_size'] if 'hidden_size' in data_dict else None
-        self.vocab_size = data_dict['vocab_size'] if 'vocab_size' in data_dict else None
-        self.weight_size_total = data_dict['weight_size_total'] if 'weight_size_total' in data_dict else None
-        self.osft_params = data_dict['osft_params'] if 'osft_params' in data_dict else None
+    def __init__(self, data: dict):
+        load_param = lambda key: data[key] if key in data else None # store None if the param doesn't exist
+
+        self.num_params = load_param('num_params')
+        self.num_trainable_params = load_param['num_trainable_params'] 
+        self.num_layers = load_param['num_layers'] 
+        self.hidden_size = load_param['hidden_size']
+        self.vocab_size = load_param['vocab_size']
+        self.weight_size_total = load_param['weight_size_total']
+        self.osft_params = load_param['osft_params'] 
 
 
 class BasicEstimator:
@@ -55,8 +55,8 @@ class BasicEstimator:
         gpu_memory (int): The VRAM of each GPU in bytes (default: 85899345920 for 80 GB)
         model_path (str): HuggingFace model path to the model to fine-tune
                         (default: "ibm-granite/granite-3.3-8b-instruct")
-        effective_batch_size (int): The number of samples in a minibatch that the model
-                                    has to see before backpropping.
+        batch_size (int): The number of samples in a minibatch that the model
+                            has to see before backpropping.
         max_seq_len (int): Maximum sequence length of dataset samples 
         max_tokens_per_gpu (int): The maximum number of tokens that can be placed
                                 on a single GPU during each mini-batch.
@@ -71,7 +71,7 @@ class BasicEstimator:
         num_gpus: int = 8,
         gpu_memory: int = 85899345920,
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        effective_batch_size: int | None = None,
+        batch_size: int | None = None,
         max_seq_len: int | None = None,
         max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
@@ -91,35 +91,23 @@ class BasicEstimator:
         # of downloading the entire model. 
         self.found_model = False
         if os.path.exists(self.storage_path):
-            read_csv = pd.read_csv(self.storage_path, index_col='name') 
-            self.model_storage = read_csv.to_dict(orient='index')
-            if model_path in self.model_storage:
-                tmp = self.model_storage[model_path]
-                tmp = _ModelStorage(tmp)
-                if hasattr(tmp, 'num_params') and hasattr(tmp, 'num_trainable_params') \
-                    and hasattr(tmp, 'num_layers') and hasattr(tmp, 'hidden_size') \
-                    and (hasattr(tmp, 'vocab_size') or self.use_liger):
-                    self.found_model = True
-                    self.model = tmp
-                else:
-                    warnings.warn("Model missing necessary parameters. Loading model directly (this may require downloading the model from HuggingFace).")
-                    with torch.device('meta'):
-                        self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
-            else:
-                warnings.warn("Model not found in the CSV. Loading model directly (this may require downloading the model from HuggingFace).")
-                with torch.device('meta'):
-                    self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+                read_csv = pd.read_csv(self.storage_path, index_col='name') 
+                self.model_storage = read_csv.to_dict(orient='index')
+                if model_path in self.model_storage:
+                    try:
+                        self.found_model = True
+                        self.model = _ModelStorage(self.model_storage[model_path])
+                        self.num_params: int = self.model.num_params
+                        self.num_trainable_params: int = self.model.num_trainable_params
+                        self.num_layers: int = self.model.num_layers
+                        self.hidden_size: int = self.model.hidden_size
+                    except:
+                        self.found_model = False
+                        self._load_model("Model missing necessary parameters.", trust_remote_code=trust_remote_code)
+                else: self._load_model("Model not found in the CSV.", trust_remote_code=trust_remote_code)                
         else:
-            warnings.warn("No CSV file found. Loading model directly (this may require downloading the model from HuggingFace).")
             self.model_storage = {}
-            with torch.device('meta'):
-                self.model = AutoModel.from_pretrained(model_path, trust_remote_code=trust_remote_code)
-
-        # Determine parameters needed for calculations
-        self.num_params: int = self.model.num_params if hasattr(self.model, 'num_params') else self.model.num_parameters(only_trainable=False)
-        self.num_trainable_params: int = self.model.num_trainable_params if hasattr(self.model, 'num_trainable_params') else self.model.num_parameters(only_trainable=True)
-        self.num_layers: int = self.model.config.num_hidden_layers if hasattr(self.model, 'config') else self.model.num_layers
-        self.hidden_size: int = self.model.config.hidden_size if hasattr(self.model, 'config') else self.model.hidden_size
+            self._load_model("No CSV file found.", trust_remote_code=trust_remote_code)
 
         # This is a scalar that's applied during the output memory calculation
         self.output_constant = 8/3
@@ -132,10 +120,27 @@ class BasicEstimator:
         self.HIGH_MULTIPLIER = 1.3
 
         # Determine how many tokens will be placed on each GPU
-        self._resolve_tokens_per_gpu(effective_batch_size, max_seq_len, max_tokens_per_gpu)
+        self._resolve_tokens_per_gpu(batch_size, max_seq_len, max_tokens_per_gpu)
 
         # Update the CSV if necessary.
         if not self.found_model: self._update_model_storage()
+
+
+    def _load_model(self, warn: str, trust_remote_code: bool = False):
+        """
+        Load the model if we can't find the information locally.
+        """
+        warnings.warn(warn + "\nThe model will be loaded directly. This may require downloading the model from HuggingFace.")
+        with torch.device('meta'):
+            self.model = AutoModel.from_pretrained(self.model_path,
+                                                    trust_remote_code=trust_remote_code,
+                                                    device_map="meta")
+        
+        # Determine parameters needed for calculations
+        self.num_params: int = self.model.num_parameters(only_trainable=False)
+        self.num_trainable_params: int = self.model.num_parameters(only_trainable=True)
+        self.num_layers: int = self.model.config.num_hidden_layers
+        self.hidden_size: int = self.model.config.hidden_size
 
 
     def _update_model_storage(self):
@@ -156,23 +161,23 @@ class BasicEstimator:
         data_out.to_csv(self.storage_path, index=True, index_label='name')
 
 
-    def _resolve_tokens_per_gpu(self, effective_batch_size: int | None, max_seq_len: int | None, max_tokens_per_gpu: int | None):
+    def _resolve_tokens_per_gpu(self, batch_size: int | None, max_seq_len: int | None, max_tokens_per_gpu: int | None):
         """
         Determine how many tokens will be placed on each GPU during each mini-batch
         It will be bounded by either the largest number of tokens in a batch (divided by # GPUs)
         *or* the value of max_tokens_per_gpu.
         """
         self.tokens_per_gpu = None            
-        if effective_batch_size is None or max_seq_len is None:
+        if batch_size is None or max_seq_len is None:
             self.tokens_per_gpu: int = max_tokens_per_gpu
         elif max_tokens_per_gpu is None:
-            self.tokens_per_gpu: int = effective_batch_size * max_seq_len / self.num_gpus
+            self.tokens_per_gpu: int = batch_size * max_seq_len / self.num_gpus
         else:
             self.tokens_per_gpu: int = min(max_tokens_per_gpu,
-                                            effective_batch_size * max_seq_len / self.num_gpus)
+                                            batch_size * max_seq_len / self.num_gpus)
 
         if self.tokens_per_gpu is None:
-            raise ValueError("At least one of (effective_batch_size, max_seq_len) or " +
+            raise ValueError("At least one of (batch_size, max_seq_len) or " +
                                 "max_tokens_per_gpu must be provided")
 
 
@@ -290,7 +295,6 @@ class BasicEstimator:
         Note that this value is 0 if Liger Kernels are used.
         """
         if not self.use_liger:
-            # This nested try-catch attempts to find the model's vocabulary size
             self.vocab_size = self._get_vocab_size()
             return (self.tokens_per_gpu * self.main_dtype_bytes * self.vocab_size) * self.output_constant
         else:
@@ -347,14 +351,16 @@ class BasicEstimator:
         print("\n")
 
         print("Component Breakdown:")
-        print("Each GPU will need " + ROUNDER(gpu_vram_par) + " GB to store the model parameters")
-        print("Each GPU will need " + ROUNDER(gpu_vram_opt) + " GB to store the optimizer states")
-        print("Each GPU will need " + ROUNDER(gpu_vram_grad) + " GB to store the gradients")
-        print("Each GPU will need " + ROUNDER(gpu_vram_act) + " GB to store the intermediate activations")
+        comp_str = lambda val, name: "Each GPU will need " + ROUNDER(val) + " GB to store the " + name
+        print(comp_str(gpu_vram_par, "model parameters"))
+        print(comp_str(gpu_vram_opt, "optimizer states"))
+        print(comp_str(gpu_vram_grad, "gradients"))
+        print(comp_str(gpu_vram_act, "intermediate activations"))
+
         if self.use_liger:
             print("Since Liger Kernels are being used, no additional memory is needed to store the outputs")
         else:
-            print("Each GPU will need " + ROUNDER(gpu_vram_outputs) + " GB to store the outputs")
+            print(comp_str(gpu_vram_outputs, "outputs"))
         if gpu_vram_additional > 0:
             print("This method also requires each GPU to use an additional " + ROUNDER(gpu_vram_additional) + " GB")
         print("Up to " + ROUNDER(overhead[2]) + " GB can be expected as overhead")
@@ -504,28 +510,26 @@ class LoRAEstimator(BasicEstimator):
                 self.weight_size_total = self.model.weight_size_total
             else:
                 self.found_model = False
-                warnings.warn("Could not find the number of LoRA-relevant parameters in the CSV cache." +
-                                "\nLoading model directly (this may require downloading the model from HuggingFace).")
-                with torch.device('meta'):
-                    self.model = AutoModel.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
-                self._update_model_storage()
+                self._load_model("Could not find the number of LoRA-relevant parameters in the CSV cache.",
+                                trust_remote_code=trust_remote_code)
                 self.weight_size_total = self._calc_weight_size(self._find_valid_layers())
+                self._update_model_storage()
         else:
             self.weight_size_total = self._calc_weight_size(self._find_valid_layers())
         self.AB_params = self.weight_size_total * lora_r
 
 
     @override
-    def _resolve_tokens_per_gpu(self, effective_batch_size: int | None,
+    def _resolve_tokens_per_gpu(self, batch_size: int | None,
                                 max_seq_len: int | None, max_tokens_per_gpu: int | None):
         """
         Find the number of tokens that will be processed by each GPU.
         For LoRA, we simply use the product of the batch size and sequence length
         to produce the number of tokens
         """
-        if effective_batch_size is None or max_seq_len is None:
-            raise ValueError("effective_batch_size and max_seq_len must be provided")
-        self.tokens_per_gpu = effective_batch_size * max_seq_len / self.num_gpus
+        if batch_size is None or max_seq_len is None:
+            raise ValueError("batch_size and max_seq_len must be provided")
+        self.tokens_per_gpu = batch_size * max_seq_len / self.num_gpus
 
 
     @override
@@ -580,6 +584,13 @@ class LoRAEstimator(BasicEstimator):
         return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
             gpu_vram_act, gpu_vram_outputs, gpu_vram_additional
 
+    def _print_results(self, results, overhead, gpu_vram_par, gpu_vram_opt,
+                        gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional):
+        print("NOTE: Due to its memory efficiency, " + \
+                "LoRA's lower bound estimate is lower than the basic sum of the components.")
+        super()._print_results(results, overhead, gpu_vram_par, gpu_vram_opt,
+                        gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional)
+
 
 class QLoRAEstimator(LoRAEstimator):
     """
@@ -621,7 +632,7 @@ class QLoRAEstimator(LoRAEstimator):
         if subtotal < offload_memory:
             print("NOTE: The memory needed for this QLoRA training setup is bounded by pre-quantized size of the model.")
             print("You can only reduce the memory further by using a smaller model.")
-            return offload_memory, offload_memory, 0, 0, 0, 0, 0
+            return offload_memory / self.num_gpus, offload_memory / self.num_gpus, 0, 0, 0, 0, 0
         else:
             return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
                 gpu_vram_act, gpu_vram_outputs, gpu_vram_additional
@@ -646,7 +657,7 @@ class OSFTEstimatorExperimental(BasicEstimator):
         num_gpus: int = 8,
         gpu_memory: int = 85899345920,
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        effective_batch_size: int | None = None,
+        batch_size: int | None = None,
         max_seq_len: int | None = None,
         max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
@@ -655,7 +666,7 @@ class OSFTEstimatorExperimental(BasicEstimator):
         unfreeze_rank_ratio: float = 0.25,
     ):
         super().__init__(num_gpus, gpu_memory, model_path,
-                        effective_batch_size, max_seq_len, max_tokens_per_gpu, 
+                        batch_size, max_seq_len, max_tokens_per_gpu, 
                         use_liger, verbose, trust_remote_code)
         self.output_constant = 7/3
         self.unfreeze_rank_ratio = unfreeze_rank_ratio
@@ -671,10 +682,8 @@ class OSFTEstimatorExperimental(BasicEstimator):
                 self.osft_params = self.model.osft_params
             else:
                 self.found_model = False
-                warnings.warn("Could not find the number of OSFT parameters in the CSV cache." +
-                                "\nLoading model directly (this may require downloading the model from HuggingFace).")
-                with torch.device('meta'):
-                    self.model = AutoModel.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
+                self._load_model("Could not find the number of OSFT parameters in the CSV cache.", 
+                                trust_remote_code=trust_remote_code)
                 self.osft_params = self._calc_osft_params()
                 self._update_model_storage()
         else:
@@ -721,7 +730,7 @@ class OSFTEstimator(BasicEstimator):
         num_gpus: int = 8,
         gpu_memory: int = 85899345920,
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        effective_batch_size: int | None = None,
+        batch_size: int | None = None,
         max_seq_len: int | None = None,
         max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
@@ -730,7 +739,7 @@ class OSFTEstimator(BasicEstimator):
         unfreeze_rank_ratio: float = 0.25,
     ):
         super().__init__(num_gpus, gpu_memory, model_path,
-                        effective_batch_size, max_seq_len, max_tokens_per_gpu, 
+                        batch_size, max_seq_len, max_tokens_per_gpu, 
                         use_liger, verbose, trust_remote_code)
         self.unfreeze_rank_ratio = unfreeze_rank_ratio
         if not (0.0 <= self.unfreeze_rank_ratio <= 1.0):
@@ -757,7 +766,7 @@ def estimate(
         num_gpus: int = 8,
         gpu_memory: int = 85899345920,
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        effective_batch_size: int | None = None,
+        batch_size: int | None = None,
         max_seq_len: int | None = None,
         max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
@@ -777,8 +786,8 @@ def estimate(
         gpu_memory (int): The VRAM of each GPU in bytes (default: 85899345920 for 80 GB)
         model_path (str): HuggingFace model path to the model to fine-tune
                         (default: "ibm-granite/granite-3.3-8b-instruct")
-        effective_batch_size (int): The number of samples in a minibatch that the model
-                                    has to see before backpropping.
+        batch_size (int): The number of samples in a minibatch that the model
+                            has to see before backpropping.
         max_seq_len (int): Maximum sequence length of dataset samples 
         max_tokens_per_gpu (int): The maximum number of tokens that can be placed
                                 on a single GPU during each mini-batch.
@@ -797,25 +806,25 @@ def estimate(
     """
     
     if training_method.lower() == "osft":
-        estimator = OSFTEstimator(num_gpus, gpu_memory, model_path, effective_batch_size,
+        estimator = OSFTEstimator(num_gpus, gpu_memory, model_path, batch_size,
                                     max_seq_len, max_tokens_per_gpu, use_liger, verbose,
                                     trust_remote_code, unfreeze_rank_ratio)
 
     elif training_method.lower() == "osft-e":
-        estimator = OSFTEstimatorExperimental(num_gpus, gpu_memory, model_path, effective_batch_size,
+        estimator = OSFTEstimatorExperimental(num_gpus, gpu_memory, model_path, batch_size,
                                                 max_seq_len, max_tokens_per_gpu, use_liger, verbose,
                                                 trust_remote_code, unfreeze_rank_ratio)
 
     elif training_method.lower() == "lora":
-        estimator = LoRAEstimator(num_gpus, gpu_memory, model_path, effective_batch_size,
+        estimator = LoRAEstimator(num_gpus, gpu_memory, model_path, batch_size,
                                 max_seq_len, use_liger, verbose, trust_remote_code, lora_r)
 
     elif training_method.lower() == "qlora":
-        estimator = QLoRAEstimator(num_gpus, gpu_memory, model_path, effective_batch_size,
+        estimator = QLoRAEstimator(num_gpus, gpu_memory, model_path, batch_size,
                                 max_seq_len, use_liger, verbose, trust_remote_code, lora_r)
 
     else:
-        estimator = BasicEstimator(num_gpus, gpu_memory, model_path, effective_batch_size, max_seq_len,
+        estimator = BasicEstimator(num_gpus, gpu_memory, model_path, batch_size, max_seq_len,
                                     max_tokens_per_gpu, use_liger, verbose, trust_remote_code)
     
     return estimator.estimate()

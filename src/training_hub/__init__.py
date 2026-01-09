@@ -3,7 +3,7 @@ from .algorithms.sft import sft, SFTAlgorithm, InstructLabTrainingSFTBackend
 from .algorithms.osft import OSFTAlgorithm, MiniTrainerOSFTBackend, osft
 from .algorithms.lora import lora_sft, LoRASFTAlgorithm, UnslothLoRABackend
 from .hub_core import welcome
-from .profiling.memory_estimator import BasicEstimator, OSFTEstimatorExperimental, estimate, OSFTEstimator
+from .profiling.memory_estimator import BasicEstimator, OSFTEstimatorExperimental, estimate, OSFTEstimator, LoRAEstimator, QLoRAEstimator
 
 __all__ = [
     'Algorithm',
@@ -23,5 +23,7 @@ __all__ = [
     'BasicEstimator',
     'OSFTEstimatorExperimental',
     'OSFTEstimator',
+    'LoRAEstimator',
+    'QLoRAEstimator',
     'estimate'
 ]
